@@ -1,178 +1,117 @@
 <script setup lang="ts">
 const api = useApi()
+const { money, pct } = useFormat()
 
-const backendStatus = ref<'checking' | 'online' | 'offline'>('checking')
-const items = ref<Item[]>([])
-const newName = ref('')
-const newDescription = ref('')
-const busy = ref(false)
-
-async function refresh() {
-  try {
-    items.value = await api.listItems()
-  }
-  catch {
-    backendStatus.value = 'offline'
-  }
-}
+const summary = ref<Summary | null>(null)
+const funnel = ref<Funnel | null>(null)
+const topProducts = ref<TopProduct[]>([])
+const orders = ref<Order[]>([])
+const loading = ref(true)
+const error = ref('')
 
 onMounted(async () => {
   try {
-    const res = await api.health()
-    backendStatus.value = res.status === 'ok' ? 'online' : 'offline'
-    await refresh()
+    const [s, f, tp, o] = await Promise.all([
+      api.summary(), api.funnel(), api.topProducts(),
+      api.orders(),
+    ])
+    summary.value = s
+    funnel.value = f
+    topProducts.value = tp
+    orders.value = o.slice(0, 8)
   }
   catch {
-    backendStatus.value = 'offline'
+    error.value = 'Backend unreachable — is uvicorn running on :8000?'
+  }
+  finally {
+    loading.value = false
   }
 })
 
-async function addItem() {
-  if (!newName.value.trim() || busy.value)
-    return
-  busy.value = true
-  try {
-    await api.createItem({ name: newName.value, description: newDescription.value || undefined })
-    newName.value = ''
-    newDescription.value = ''
-    await refresh()
-  }
-  finally {
-    busy.value = false
-  }
-}
-
-async function removeItem(id: number) {
-  await api.deleteItem(id)
-  await refresh()
-}
+const maxFunnel = computed(() =>
+  Math.max(1, ...(funnel.value?.pipeline.map(p => p.count) ?? [])),
+)
 </script>
 
 <template>
-  <section>
-    <h2>Stack status</h2>
-    <ul class="stack-list">
-      <li><strong>Nuxt 4</strong> — frontend running</li>
-      <li>
-        <strong>FastAPI</strong> —
-        <span :class="['badge', backendStatus]">
-          {{ backendStatus === 'online' ? 'connected' : backendStatus === 'offline' ? 'offline' : 'checking…' }}
-        </span>
-      </li>
-      <li><strong>SQLAlchemy</strong> — SQLite via backend</li>
-    </ul>
+  <div>
+    <div class="page-head">
+      <div>
+        <h1>Command Center</h1>
+        <div class="sub">Live view of the commerce network — China → Nigeria corridor</div>
+      </div>
+    </div>
 
-    <h2>Items (demo CRUD)</h2>
-    <form class="row" @submit.prevent="addItem">
-      <input v-model="newName" placeholder="Item name" required>
-      <input v-model="newDescription" placeholder="Description (optional)">
-      <button type="submit" :disabled="busy">
-        Add
-      </button>
-    </form>
+    <div v-if="error" class="card" style="border-color:#fecaca;color:#991b1b">{{ error }}</div>
+    <div v-else-if="loading" class="empty">Loading network state…</div>
 
-    <ul v-if="items.length" class="item-list">
-      <li v-for="item in items" :key="item.id">
-        <div>
-          <strong>{{ item.name }}</strong>
-          <span v-if="item.description" class="muted"> — {{ item.description }}</span>
+    <template v-else-if="summary">
+      <div class="kpi-grid">
+        <KpiCard label="Collected revenue" :value="money(summary.revenue_ngn)" :sub="`${summary.orders_delivered} delivered`" />
+        <KpiCard label="COD pending" :value="money(summary.cod_pending_ngn)" sub="collects on delivery" />
+        <KpiCard label="Orders" :value="String(summary.orders_total)" :sub="`${summary.orders_in_flight} in flight`" />
+        <KpiCard label="Delivery rate" :value="pct(summary.delivery_rate)" :sub="`${summary.orders_problem} problem orders`" />
+        <KpiCard label="Avg order value" :value="money(summary.aov_ngn)" sub="per paid order" />
+        <KpiCard label="Active leads" :value="String(summary.leads_active)" :sub="`of ${summary.leads_total} total`" />
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="spread" style="margin-bottom:.8rem">
+            <h2>Recent orders</h2>
+            <NuxtLink to="/orders"><button class="ghost small">All orders</button></NuxtLink>
+          </div>
+          <table>
+            <thead>
+              <tr><th>#</th><th>Customer</th><th>Total</th><th>Payment</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="o in orders" :key="o.id">
+                <td>
+                  <NuxtLink :to="`/orders/${o.id}`" class="mono">#{{ o.id }}</NuxtLink>
+                </td>
+                <td>{{ o.customer_name }}</td>
+                <td>{{ money(o.total) }}</td>
+                <td><StatusBadge :status="o.payment_status" /></td>
+                <td><StatusBadge :status="o.status" /></td>
+              </tr>
+            </tbody>
+          </table>
         </div>
-        <button class="danger" @click="removeItem(item.id)">Delete</button>
-      </li>
-    </ul>
-    <p v-else class="muted">
-      No items yet — add one above to test the FastAPI + SQLAlchemy round-trip.
-    </p>
-  </section>
+
+        <div class="card">
+          <h2 style="margin-bottom:.8rem">Lead pipeline</h2>
+          <template v-if="funnel">
+            <div v-for="p in funnel.pipeline" :key="p.status" class="funnel-row">
+              <div class="fl-label"><StatusBadge :status="p.status" /></div>
+              <div class="fl-bar" :style="{ width: `${(p.count / maxFunnel) * 100}%` }"></div>
+              <div class="fl-count">{{ p.count }}</div>
+            </div>
+            <div v-if="funnel.exits.some(e => e.count)" style="margin-top:1rem">
+              <div class="muted" style="font-size:.75rem;margin-bottom:.4rem">EXITS</div>
+              <div v-for="e in funnel.exits.filter(x => x.count)" :key="e.status" class="funnel-row">
+                <div class="fl-label"><StatusBadge :status="e.status" /></div>
+                <div class="fl-count">{{ e.count }}</div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:.9rem">
+        <h2 style="margin-bottom:.8rem">Top products by revenue</h2>
+        <table>
+          <thead><tr><th>Product</th><th>Units</th><th>Revenue</th></tr></thead>
+          <tbody>
+            <tr v-for="p in topProducts" :key="p.product_id">
+              <td>{{ p.title }}</td>
+              <td>{{ p.units }}</td>
+              <td>{{ money(p.revenue_ngn) }}</td>
+            </tr>
+            <tr v-if="!topProducts.length"><td colspan="3" class="empty">No sales yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </template>
+  </div>
 </template>
-
-<style scoped>
-.stack-list {
-  list-style: none;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.badge {
-  padding: 0.15rem 0.6rem;
-  border-radius: 999px;
-  font-size: 0.8rem;
-  font-weight: 600;
-}
-
-.badge.online {
-  background: #dcfce7;
-  color: #166534;
-}
-
-.badge.offline {
-  background: #fee2e2;
-  color: #991b1b;
-}
-
-.badge.checking {
-  background: #fef9c3;
-  color: #854d0e;
-}
-
-.row {
-  display: flex;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  margin-bottom: 1rem;
-}
-
-.row input {
-  flex: 1;
-  min-width: 160px;
-  padding: 0.55rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-size: 0.95rem;
-}
-
-button {
-  padding: 0.55rem 1rem;
-  border: none;
-  border-radius: 8px;
-  background: var(--accent);
-  color: #003c22;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-button.danger {
-  background: transparent;
-  color: #b91c1c;
-  border: 1px solid #fecaca;
-}
-
-.item-list {
-  list-style: none;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.item-list li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.65rem 1rem;
-}
-
-.muted {
-  color: var(--muted);
-}
-</style>

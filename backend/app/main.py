@@ -1,37 +1,97 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from pathlib import Path
 
-from app import models  # noqa: F401 — ensure models are registered before create_all
-from app.database import Base, engine
-from app.routers import items
+from dotenv import load_dotenv
+
+# Load the project-root .env (DATABASE_URL etc.) regardless of cwd
+_ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
+load_dotenv(_ROOT_ENV)
+
+from contextlib import asynccontextmanager  # noqa: E402
+
+from fastapi import FastAPI  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+
+from app.core.database import Base, engine, SessionLocal  # noqa: E402
+from app.core import subscribers  # noqa: E402
+
+# Import all models so create_all sees every table
+from app.core import models as core_models  # noqa: F401,E402
+from app.identity import models as identity_models  # noqa: F401,E402
+from app.supply import models as supply_models  # noqa: F401,E402
+from app.catalog import models as catalog_models  # noqa: F401,E402
+from app.storefront import models as storefront_models  # noqa: F401,E402
+from app.crm import models as crm_models  # noqa: F401,E402
+from app.orders import models as orders_models  # noqa: F401,E402
+from app.logistics import models as logistics_models  # noqa: F401,E402
+from app.payments import models as payments_models  # noqa: F401,E402
+from app.finance import models as finance_models  # noqa: F401,E402
+
+from app.core.seed import seed_if_empty  # noqa: E402
+from app.identity.router import router as identity_router  # noqa: E402
+from app.supply.router import router as supply_router  # noqa: E402
+from app.catalog.router import router as catalog_router  # noqa: E402
+from app.storefront.router import router as storefront_router  # noqa: E402
+from app.crm.router import router as crm_router  # noqa: E402
+from app.crm.router import customers_router  # noqa: E402
+from app.orders.router import router as orders_router  # noqa: E402
+from app.logistics.router import router as logistics_router  # noqa: E402
+from app.payments.router import router as payments_router  # noqa: E402
+from app.finance.router import router as finance_router  # noqa: E402
+from app.analytics.router import router as analytics_router  # noqa: E402
+from app.core.models import DomainEvent  # noqa: E402
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    subscribers.register_all()
+    Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        seed_if_empty(db)
+    yield
+
 
 app = FastAPI(
-    title="App API",
+    title="Ecos API",
     version="0.1.0",
-    description="FastAPI + SQLAlchemy backend (Nuxt frontend).",
+    description=(
+        "Ecos — Luxeen's global e-commerce operating system (plan §61). "
+        "The operator runs the business. Ecos runs the infrastructure underneath it."
+    ),
+    lifespan=lifespan,
 )
 
-# CORS — allow the Nuxt dev server origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(items.router, prefix="/api")
-
-
-@app.on_event("startup")
-def on_startup() -> None:
-    # Dev-friendly: create tables on boot. Swap for Alembic migrations later.
-    Base.metadata.create_all(bind=engine)
+for r in [
+    identity_router, supply_router, catalog_router, storefront_router,
+    crm_router, customers_router, orders_router, logistics_router, payments_router,
+    finance_router, analytics_router,
+]:
+    app.include_router(r, prefix="/api")
 
 
 @app.get("/api/health", tags=["health"])
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "system": "ecos"}
+
+
+@app.get("/api/events", tags=["events"])
+def list_events(name: str | None = None, limit: int = 100):
+    """Domain event audit trail (§40, §44)."""
+    from sqlalchemy.orm import sessionmaker
+
+    Session = sessionmaker(bind=engine)
+    with Session() as db:
+        q = db.query(DomainEvent).order_by(DomainEvent.id.desc())
+        if name:
+            q = q.filter(DomainEvent.name == name)
+        return [
+            {"id": e.id, "name": e.name, "payload": e.payload, "created_at": e.created_at.isoformat()}
+            for e in q.limit(min(limit, 500)).all()
+        ]
