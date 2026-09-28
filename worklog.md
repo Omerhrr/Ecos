@@ -188,3 +188,17 @@ Stage Summary:
 - The returns loop is now physically closed: RMA received -> goods back on a specific shelf -> movement ledger + notification narrate it -> storefront availability restored.
 - Customers can self-serve order status end-to-end without an account (phone-guarded), incl. courier checkpoints once shipped.
 - Pending (user-held): DeepSeek live key -> real AI inference (provider layer + operators already wired in core/llm.py + ai_harness; only the key/config is missing). Backlog otherwise: USD pricing page.
+
+---
+Task ID: 10
+Agent: main (Super Z)
+Task: Archive the 62-section ECOS plan (re-pasted by user) and produce a full build-status audit.
+
+Work Log:
+- User re-pasted the complete 62-section product blueprint (the original paste had been lost to context compression)
+- Saved verbatim to PLAN.md (2245 lines, all 62 sections verified present) so the spec can never be lost again
+- Created STATUS.md: per-section audit vs the codebase/worklog — 24 core done, 14 partial, 12 not started, 12 vision/context; ranked 10-item remaining engineering list (automation engine §41 first, AI live key §31 user-parked, missing operators §32/33/36/37/38, USD multi-currency §46, analytics suites §29, COD register §24, catalog variants §10, LP polish, token refresh, later bets)
+- Committed + pushed docs to origin main
+
+Stage Summary:
+- Plan and audit are now durable repo artifacts; every future task can be checked against PLAN.md and STATUS.md kept current.
