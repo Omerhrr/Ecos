@@ -18,6 +18,7 @@ class Product(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     supplier_id: Mapped[int] = mapped_column(Integer, index=True)
+    slug: Mapped[str | None] = mapped_column(String(280), nullable=True, unique=True, index=True)
     title: Mapped[str] = mapped_column(String(255), index=True)
     description: Mapped[str] = mapped_column(String(4096), default="")
     category: Mapped[str] = mapped_column(String(100), default="general", index=True)

@@ -1,14 +1,20 @@
+import re
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.catalog import models as m
 from app.core.database import get_db
+from app.core.deps import require_perm
 from app.core.events import publish
 from app.core.pricing import price_product
 from app.supply import models as sm
 
-router = APIRouter(prefix="/products", tags=["catalog"])
+router = APIRouter(
+    prefix="/products", tags=["catalog"],
+    dependencies=[Depends(require_perm("catalog:read"))],
+)
 
 
 class ProductIn(BaseModel):
@@ -39,6 +45,15 @@ class ProductPatch(BaseModel):
     specs: dict | None = None
 
 
+def _slugify(db: Session, title: str) -> str:
+    base = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or "product"
+    slug, n = base, 2
+    while db.query(m.Product).filter(m.Product.slug == slug).first():
+        slug = f"{base}-{n}"
+        n += 1
+    return slug
+
+
 def serialize(db: Session, p: m.Product) -> dict:
     breakdown = price_product(
         supplier_cost=p.supplier_cost, currency=p.currency,
@@ -47,6 +62,7 @@ def serialize(db: Session, p: m.Product) -> dict:
     supplier = db.get(sm.Supplier, p.supplier_id)
     return {
         "id": p.id,
+        "slug": p.slug,
         "supplier_id": p.supplier_id,
         "supplier_name": supplier.name if supplier else None,
         "supplier_lead_time_days": supplier.lead_time_days if supplier else None,
@@ -77,11 +93,12 @@ def list_products(status: str | None = None, category: str | None = None, db: Se
     return [serialize(db, p) for p in q.all()]
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_perm("catalog:write"))])
 def create_product(payload: ProductIn, db: Session = Depends(get_db)):
     if not db.get(sm.Supplier, payload.supplier_id):
         raise HTTPException(400, "Unknown supplier")
     p = m.Product(**payload.model_dump())
+    p.slug = _slugify(db, p.title)
     db.add(p)
     db.flush()
     publish(db, "product.created", {"product_id": p.id, "title": p.title, "supplier_id": p.supplier_id})
@@ -97,7 +114,7 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
     return serialize(db, p)
 
 
-@router.patch("/{product_id}")
+@router.patch("/{product_id}", dependencies=[Depends(require_perm("catalog:write"))])
 def patch_product(product_id: int, payload: ProductPatch, db: Session = Depends(get_db)):
     p = db.get(m.Product, product_id)
     if not p:

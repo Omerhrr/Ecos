@@ -3,10 +3,14 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.deps import require_perm
 from app.core.events import publish
 from app.supply import models as m
 
-router = APIRouter(prefix="/suppliers", tags=["supply"])
+router = APIRouter(
+    prefix="/suppliers", tags=["supply"],
+    dependencies=[Depends(require_perm("supply:read"))],
+)
 
 
 class SupplierIn(BaseModel):
@@ -37,7 +41,7 @@ def list_suppliers(db: Session = Depends(get_db)):
     return [serialize(s) for s in db.query(m.Supplier).order_by(m.Supplier.id).all()]
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_perm("supply:write"))])
 def create_supplier(payload: SupplierIn, db: Session = Depends(get_db)):
     s = m.Supplier(**payload.model_dump())
     db.add(s)
@@ -47,7 +51,7 @@ def create_supplier(payload: SupplierIn, db: Session = Depends(get_db)):
     return serialize(s)
 
 
-@router.patch("/{supplier_id}")
+@router.patch("/{supplier_id}", dependencies=[Depends(require_perm("supply:write"))])
 def patch_supplier(supplier_id: int, payload: SupplierPatch, db: Session = Depends(get_db)):
     s = db.get(m.Supplier, supplier_id)
     if not s:

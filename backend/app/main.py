@@ -8,7 +8,7 @@ load_dotenv(_ROOT_ENV)
 
 from contextlib import asynccontextmanager  # noqa: E402
 
-from fastapi import FastAPI  # noqa: E402
+from fastapi import Depends, FastAPI  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
 from app.core.database import Base, engine, SessionLocal  # noqa: E402
@@ -25,18 +25,23 @@ from app.orders import models as orders_models  # noqa: F401,E402
 from app.logistics import models as logistics_models  # noqa: F401,E402
 from app.payments import models as payments_models  # noqa: F401,E402
 from app.finance import models as finance_models  # noqa: F401,E402
+from app.landing_pages import models as landing_models  # noqa: F401,E402
 
 from app.core.seed import seed_if_empty  # noqa: E402
+from app.core.deps import require_auth  # noqa: E402
 from app.identity.router import router as identity_router  # noqa: E402
+from app.identity.router import auth_router  # noqa: E402
 from app.supply.router import router as supply_router  # noqa: E402
 from app.catalog.router import router as catalog_router  # noqa: E402
 from app.storefront.router import router as storefront_router  # noqa: E402
+from app.storefront.public import public_router  # noqa: E402
 from app.crm.router import router as crm_router  # noqa: E402
 from app.crm.router import customers_router  # noqa: E402
 from app.orders.router import router as orders_router  # noqa: E402
 from app.logistics.router import router as logistics_router  # noqa: E402
 from app.payments.router import router as payments_router  # noqa: E402
 from app.finance.router import router as finance_router  # noqa: E402
+from app.landing_pages.router import router as landing_pages_router  # noqa: E402
 from app.analytics.router import router as analytics_router  # noqa: E402
 from app.core.models import DomainEvent  # noqa: E402
 
@@ -69,9 +74,9 @@ app.add_middleware(
 )
 
 for r in [
-    identity_router, supply_router, catalog_router, storefront_router,
-    crm_router, customers_router, orders_router, logistics_router, payments_router,
-    finance_router, analytics_router,
+    auth_router, identity_router, supply_router, catalog_router, storefront_router,
+    public_router, crm_router, customers_router, orders_router, logistics_router,
+    payments_router, finance_router, landing_pages_router, analytics_router,
 ]:
     app.include_router(r, prefix="/api")
 
@@ -81,7 +86,7 @@ def health():
     return {"status": "ok", "system": "ecos"}
 
 
-@app.get("/api/events", tags=["events"])
+@app.get("/api/events", tags=["events"], dependencies=[Depends(require_auth)])
 def list_events(name: str | None = None, limit: int = 100):
     """Domain event audit trail (§40, §44)."""
     from sqlalchemy.orm import sessionmaker

@@ -3,10 +3,14 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.deps import require_perm
 from app.core.events import publish
 from app.storefront import models as m
 
-router = APIRouter(prefix="/stores", tags=["storefront"])
+router = APIRouter(
+    prefix="/stores", tags=["storefront"],
+    dependencies=[Depends(require_perm("storefront:read"))],
+)
 
 
 class StoreIn(BaseModel):
@@ -30,7 +34,7 @@ def list_stores(db: Session = Depends(get_db)):
     return [serialize(s) for s in db.query(m.Store).order_by(m.Store.id).all()]
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_perm("storefront:write"))])
 def create_store(payload: StoreIn, db: Session = Depends(get_db)):
     if db.query(m.Store).filter(m.Store.slug == payload.slug).first():
         raise HTTPException(400, "Slug already taken")

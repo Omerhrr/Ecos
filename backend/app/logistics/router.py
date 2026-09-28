@@ -3,11 +3,15 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.deps import require_perm
 from app.logistics import models as m
 from app.logistics import service
 from app.orders import models as om
 
-router = APIRouter(prefix="/shipments", tags=["logistics"])
+router = APIRouter(
+    prefix="/shipments", tags=["logistics"],
+    dependencies=[Depends(require_perm("logistics:read"))],
+)
 
 
 class TrackingEventIn(BaseModel):
@@ -49,7 +53,7 @@ def list_shipments(status: str | None = None, db: Session = Depends(get_db)):
     return [serialize(db, s) for s in q.all()]
 
 
-@router.post("/create-for-order/{order_id}", status_code=201)
+@router.post("/create-for-order/{order_id}", status_code=201, dependencies=[Depends(require_perm("logistics:write"))])
 def create_for_order(order_id: int, db: Session = Depends(get_db)):
     order = db.get(om.Order, order_id)
     if not order:
@@ -70,7 +74,7 @@ def get_shipment(shipment_id: int, db: Session = Depends(get_db)):
     return serialize(db, s)
 
 
-@router.post("/{shipment_id}/events")
+@router.post("/{shipment_id}/events", dependencies=[Depends(require_perm("logistics:write"))])
 def add_event(shipment_id: int, payload: TrackingEventIn, db: Session = Depends(get_db)):
     s = db.get(m.Shipment, shipment_id)
     if not s:

@@ -3,9 +3,13 @@ from sqlalchemy import func as sa_func
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.deps import require_perm
 from app.finance import models as m
 
-router = APIRouter(prefix="/finance", tags=["finance"])
+router = APIRouter(
+    prefix="/finance", tags=["finance"],
+    dependencies=[Depends(require_perm("finance:read"))],
+)
 
 
 @router.get("/ledger")

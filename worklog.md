@@ -42,3 +42,25 @@ Stage Summary:
 - Frontend: Nuxt :3000, 8 pages all HTTP 200, zero compile errors
 - Deliberately deferred (per plan phasing): auth/JWT (§43 permissions), public storefront + landing page engine (§14-15), marketing attribution (§16), returns module (§28), settlements engine (§27), AI harness operators (§31-38), Alembic migrations
 - DB: sqlite via DATABASE_URL file: scheme (/home/z/my-project/db/custom.db), reseeded fresh on this build
+
+---
+Task ID: 3
+Agent: main (Super Z)
+Task: Build ECOS Phase 2 per user request: (1) auth + tenancy permissions (§43), (2) landing page engine (§15), (3) public storefront pages (§14).
+
+Work Log:
+- §43 auth core (stdlib-only, zero new deps): core/security.py (PBKDF2-SHA256 120k + HS256 JWT, 12h TTL), core/permissions.py (19 perms across 10 modules; roles luxeen_admin/owner/admin/manager/agent/viewer), core/deps.py (AuthContext, require_auth, require_perm factory)
+- User model: +password_hash, +is_active; identity router: POST /auth/login, GET /auth/me, POST /users (identity:manage, platform staff may target any org); /orgs //users tenant-filtered, /api/events now requires auth
+- All 11 domain routers guarded: router-level read perm + write perm on mutating endpoints (catalog, supply, storefront, crm leads/customers, orders, logistics, payments, finance, analytics, landing pages)
+- §15 landing_pages domain: LandingPage model (slug unique, blocks/theme/seo JSON, draft|published), blocks.py (9-type registry: hero/rich_text/image_text/feature_grid/product_showcase/testimonials/faq/trust_badges/cta; sanitize_blocks validation; resolve_blocks embeds public product cards into showcase on render), admin router (CRUD + publish/unpublish + /blocks registry endpoint, org-scoped, slug regex + uniqueness)
+- §14 public storefront API (no auth): /public/store, /public/home (store + published `home` page + latest products), /public/products, /public/products/{slug}, /public/pages/{slug}, POST /public/leads (COD order intent -> CRM lead source=storefront); public_card() guarantees zero supplier/cost leakage (§9); Product.slug column added (auto-slugify in catalog create)
+- Seed: users w/ password demo1234 (owner@kara.example owner, bisi@kara.example agent, ops@luxeen.example luxeen_admin), product slugs + picsum images, published `home` page (6 blocks) + draft `smartwatch-launch` page; DB wiped & reseeded (no Alembic yet)
+- Frontend: app.vue -> NuxtLayout wrapper; layouts/default.vue (admin shell + Landing Pages nav + user chip + Sign out + View storefront link); layouts/public.vue (storefront chrome w/ store name + footer); middleware/auth.global.ts (client-side guard, public: /, /login, /lp/*, /products/*); useAuth composable (localStorage session); useApi rewritten: authed $fetch instance w/ Bearer header + 401 redirect, + auth/landing/public endpoints + full types
+- Pages: /login (demo accounts); dashboard moved / -> /dashboard; /landing-pages (list + create + publish/unpublish + delete); /landing-pages/[id] (registry-driven block editor: add/reorder/delete blocks, per-type dynamic fields, theme color, SEO, save); public: / (home page blocks + latest products), /products, /products/[slug] (gallery + specs + COD order-intent form), /lp/[slug] (theme color via CSS var, SEO head)
+- Infra fix: sandbox reaps background processes on shell exit; added scripts/daemon_start.py (double-fork daemonizer) — uvicorn now survives across sessions
+- Verified in browser (agent-browser): home renders hero/badges/showcase, login->dashboard, landing pages list + editor, PDP COD form -> "Request received", unauth /dashboard -> /login redirect; curl RBAC: no-token 401, agent catalog:write 403 but crm:write 201, manager supply:write 403 but landing_pages:write 201, luxeen_admin cross-org pages + provisioning into Kara org; public PDP leak-check clean; storefront leads visible in CRM (lead #7, #8)
+
+Stage Summary:
+- Backend: 15 routers mounted, 3 new tables (landing_pages), auth on all admin routes; uvicorn :8000 (daemonized, log /tmp/backend.log)
+- Frontend: 13 pages (8 admin + 5 public/login), 2 layouts, global auth middleware; nuxt :3000 (log /tmp/frontend.log)
+- Deliberately deferred: checkout cart + direct public order creation, page versioning/scheduling, per-block preview thumbnails, marketing attribution (§16), returns (§28), settlements engine (§27), AI harness (§31-38), Alembic migrations, token refresh

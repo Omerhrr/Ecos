@@ -3,13 +3,17 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.deps import require_perm
 from app.core.events import publish
 from app.crm import models as crm_m
 from app.orders import models as m
 from app.orders import service
 from app.storefront import models as stm
 
-router = APIRouter(prefix="/orders", tags=["orders"])
+router = APIRouter(
+    prefix="/orders", tags=["orders"],
+    dependencies=[Depends(require_perm("orders:read"))],
+)
 
 
 class OrderIn(BaseModel):
@@ -69,7 +73,7 @@ def list_orders(status: str | None = None, db: Session = Depends(get_db)):
     return [serialize(db, o) for o in q.all()]
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_perm("orders:write"))])
 def create_order(payload: OrderIn, db: Session = Depends(get_db)):
     try:
         result = service.create_order(
@@ -91,7 +95,7 @@ def get_order(order_id: int, db: Session = Depends(get_db)):
     return serialize_detail(db, o)
 
 
-@router.post("/{order_id}/transition")
+@router.post("/{order_id}/transition", dependencies=[Depends(require_perm("orders:write"))])
 def transition(order_id: int, payload: TransitionIn, db: Session = Depends(get_db)):
     o = db.get(m.Order, order_id)
     if not o:

@@ -10,11 +10,15 @@ from sqlalchemy import func as sa_func
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.deps import require_perm
 from app.crm import models as cm
 from app.orders import models as om
 from app.payments import models as pm
 
-router = APIRouter(prefix="/analytics", tags=["analytics"])
+router = APIRouter(
+    prefix="/analytics", tags=["analytics"],
+    dependencies=[Depends(require_perm("analytics:read"))],
+)
 
 
 @router.get("/summary")

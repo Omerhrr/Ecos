@@ -4,13 +4,20 @@ from sqlalchemy.orm import Session
 
 from app.catalog import models as cm
 from app.core.database import get_db
+from app.core.deps import require_perm
 from app.core.events import publish
 from app.crm import models as m
 from app.orders import service as order_service
 from app.storefront import models as stm
 
-router = APIRouter(prefix="/leads", tags=["crm"])
-customers_router = APIRouter(prefix="/customers", tags=["crm"])
+router = APIRouter(
+    prefix="/leads", tags=["crm"],
+    dependencies=[Depends(require_perm("crm:read"))],
+)
+customers_router = APIRouter(
+    prefix="/customers", tags=["crm"],
+    dependencies=[Depends(require_perm("crm:read"))],
+)
 
 
 class LeadIn(BaseModel):
@@ -66,7 +73,7 @@ def list_leads(status: str | None = None, db: Session = Depends(get_db)):
     return [serialize(db, l) for l in q.all()]
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_perm("crm:write"))])
 def create_lead(payload: LeadIn, db: Session = Depends(get_db)):
     if not db.get(cm.Product, payload.product_id):
         raise HTTPException(400, "Unknown product")
@@ -83,7 +90,7 @@ def create_lead(payload: LeadIn, db: Session = Depends(get_db)):
     return serialize(db, lead)
 
 
-@router.patch("/{lead_id}")
+@router.patch("/{lead_id}", dependencies=[Depends(require_perm("crm:write"))])
 def patch_lead(lead_id: int, payload: LeadPatch, db: Session = Depends(get_db)):
     lead = db.get(m.Lead, lead_id)
     if not lead:
@@ -98,7 +105,7 @@ def patch_lead(lead_id: int, payload: LeadPatch, db: Session = Depends(get_db)):
     return serialize(db, lead)
 
 
-@router.post("/{lead_id}/convert", status_code=201)
+@router.post("/{lead_id}/convert", status_code=201, dependencies=[Depends(require_perm("crm:write"))])
 def convert_lead(lead_id: int, qty: int = 1, db: Session = Depends(get_db)):
     """Convert a lead into a customer + order (pipeline: interested -> order_created)."""
     lead = db.get(m.Lead, lead_id)

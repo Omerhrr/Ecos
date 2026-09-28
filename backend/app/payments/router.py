@@ -3,11 +3,15 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.deps import require_perm
 from app.orders import models as om
 from app.payments import models as m
 from app.payments import service
 
-router = APIRouter(prefix="/payments", tags=["payments"])
+router = APIRouter(
+    prefix="/payments", tags=["payments"],
+    dependencies=[Depends(require_perm("payments:read"))],
+)
 
 
 class CaptureIn(BaseModel):
@@ -42,7 +46,7 @@ def get_payment(payment_id: int, db: Session = Depends(get_db)):
     return serialize(p)
 
 
-@router.post("/{payment_id}/capture")
+@router.post("/{payment_id}/capture", dependencies=[Depends(require_perm("payments:write"))])
 def capture(payment_id: int, payload: CaptureIn, db: Session = Depends(get_db)):
     """Capture a payment (gateway callback simulation, or manual COD collection)."""
     p = db.get(m.Payment, payment_id)

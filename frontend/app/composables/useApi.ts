@@ -1,6 +1,10 @@
 /**
  * Ecos API client + shared types.
  * The Nitro dev proxy forwards /api/** to FastAPI on :8000.
+ *
+ * All calls run through `req`, an authed $fetch instance: it attaches the
+ * Bearer token and redirects to /login on 401 from admin-only paths
+ * (plan §43).
  */
 
 export interface PricingInfo {
@@ -11,6 +15,7 @@ export interface PricingInfo {
 
 export interface Product {
   id: number
+  slug: string | null
   supplier_id: number
   supplier_name: string | null
   supplier_lead_time_days: number | null
@@ -191,49 +196,215 @@ export interface TopProduct {
   revenue_ngn: number
 }
 
+/* ---------------- §15 landing pages ---------------- */
+
+export interface BlockFieldDef {
+  key: string
+  label: string
+  ftype: 'text' | 'textarea' | 'url' | 'color' | 'select' | 'number' | 'lines' | 'csv_ids'
+  options: string[] | null
+  default: string
+  hint: string
+}
+
+export interface BlockTypeDef {
+  type: string
+  label: string
+  fields: BlockFieldDef[]
+}
+
+export interface LandingPageBlock {
+  id: string
+  type: string
+  [key: string]: unknown
+}
+
+export interface LandingPageSummary {
+  id: number
+  org_id: number
+  slug: string
+  title: string
+  status: 'draft' | 'published'
+  block_count: number
+  updated_at: string | null
+  published_at: string | null
+}
+
+export interface LandingPage extends LandingPageSummary {
+  blocks: LandingPageBlock[]
+  theme: { primary?: string }
+  seo: { title?: string; description?: string; og_image?: string }
+}
+
+/* ---------------- §14 public storefront ---------------- */
+
+export interface PublicProduct {
+  id: number
+  slug: string | null
+  title: string
+  category: string
+  brand: string
+  price_ngn: number
+  image: string | null
+  images: string[]
+  in_stock: boolean
+}
+
+export interface PublicProductDetail extends PublicProduct {
+  description: string
+  specs: Record<string, unknown>
+}
+
+export interface PublicStore {
+  id: number
+  name: string
+  slug: string
+  country: string
+  currency: string
+}
+
+export interface PublicHome {
+  store: PublicStore
+  page: {
+    id: number
+    slug: string
+    title: string
+    blocks: LandingPageBlock[]
+    theme: { primary?: string }
+    seo: Record<string, string>
+  } | null
+  products: PublicProduct[]
+}
+
+export interface PublicPage {
+  id: number
+  slug: string
+  title: string
+  blocks: LandingPageBlock[]
+  theme: { primary?: string }
+  seo: Record<string, string>
+}
+
+/* ---------------- §43 auth ---------------- */
+
+export interface LoginResponse {
+  token: string
+  user: {
+    id: number
+    org_id: number
+    name: string
+    email: string
+    role: string
+    is_active: boolean
+  }
+  org: { id: number; name: string; type: string; country: string; currency: string }
+  permissions: string[]
+}
+
+const PUBLIC_PATHS = ['/', '/login', '/lp', '/products']
+
+function isPublicPath(path: string) {
+  if (path === '/' || path === '/login') return true
+  return PUBLIC_PATHS.some(p => p !== '/' && path.startsWith(`${p}/`))
+}
+
 export function useApi() {
+  const req = $fetch.create({
+    onRequest({ options }) {
+      if (import.meta.client) {
+        const token = localStorage.getItem('ecos:token')
+        if (token) {
+          const headers = new Headers(options.headers as HeadersInit | undefined)
+          headers.set('Authorization', `Bearer ${token}`)
+          options.headers = headers
+        }
+      }
+    },
+    onResponseError({ response }) {
+      if (
+        response.status === 401
+        && import.meta.client
+        && !isPublicPath(window.location.pathname)
+      ) {
+        localStorage.removeItem('ecos:token')
+        navigateTo('/login')
+      }
+    },
+  })
+
   return {
-    health: () => $fetch<{ status: string; system: string }>('/api/health'),
-    summary: () => $fetch<Summary>('/api/analytics/summary'),
-    funnel: () => $fetch<Funnel>('/api/analytics/funnel'),
-    topProducts: () => $fetch<TopProduct[]>('/api/analytics/top-products'),
+    // ---- auth (§43) ----
+    login: (email: string, password: string) =>
+      req<LoginResponse>('/api/auth/login', { method: 'POST', body: { email, password } }),
+    me: () => req<LoginResponse>('/api/auth/me'),
+    createUser: (body: Record<string, unknown>) =>
+      req<Record<string, unknown>>('/api/users', { method: 'POST', body }),
 
-    suppliers: () => $fetch<Supplier[]>('/api/suppliers'),
-    stores: () => $fetch<Store[]>('/api/stores'),
+    // ---- analytics ----
+    summary: () => req<Summary>('/api/analytics/summary'),
+    funnel: () => req<Funnel>('/api/analytics/funnel'),
+    topProducts: () => req<TopProduct[]>('/api/analytics/top-products'),
 
-    products: (params?: { status?: string }) => $fetch<Product[]>('/api/products', { params }),
+    suppliers: () => req<Supplier[]>('/api/suppliers'),
+    stores: () => req<Store[]>('/api/stores'),
+
+    products: (params?: { status?: string }) => req<Product[]>('/api/products', { params }),
     createProduct: (body: Partial<Product>) =>
-      $fetch<Product>('/api/products', { method: 'POST', body }),
+      req<Product>('/api/products', { method: 'POST', body }),
     patchProduct: (id: number, body: Record<string, unknown>) =>
-      $fetch<Product>(`/api/products/${id}`, { method: 'PATCH', body }),
+      req<Product>(`/api/products/${id}`, { method: 'PATCH', body }),
 
-    leads: () => $fetch<Lead[]>('/api/leads'),
+    leads: () => req<Lead[]>('/api/leads'),
     createLead: (body: Record<string, unknown>) =>
-      $fetch<Lead>('/api/leads', { method: 'POST', body }),
+      req<Lead>('/api/leads', { method: 'POST', body }),
     patchLead: (id: number, body: Record<string, unknown>) =>
-      $fetch<Lead>(`/api/leads/${id}`, { method: 'PATCH', body }),
+      req<Lead>(`/api/leads/${id}`, { method: 'PATCH', body }),
     convertLead: (id: number) =>
-      $fetch<{ order_id: number }>(`/api/leads/${id}/convert`, { method: 'POST' }),
+      req<{ order_id: number }>(`/api/leads/${id}/convert`, { method: 'POST' }),
 
-    orders: (params?: { status?: string }) => $fetch<Order[]>('/api/orders', { params }),
-    order: (id: number) => $fetch<OrderDetail>(`/api/orders/${id}`),
+    orders: (params?: { status?: string }) => req<Order[]>('/api/orders', { params }),
+    order: (id: number) => req<OrderDetail>(`/api/orders/${id}`),
     createOrder: (body: Record<string, unknown>) =>
-      $fetch<{ id: number }>('/api/orders', { method: 'POST', body }),
+      req<{ id: number }>('/api/orders', { method: 'POST', body }),
     transitionOrder: (id: number, status: string) =>
-      $fetch<OrderDetail>(`/api/orders/${id}/transition`, { method: 'POST', body: { status } }),
+      req<OrderDetail>(`/api/orders/${id}/transition`, { method: 'POST', body: { status } }),
 
-    shipments: () => $fetch<Shipment[]>('/api/shipments'),
-    shipment: (id: number) => $fetch<Shipment>(`/api/shipments/${id}`),
+    shipments: () => req<Shipment[]>('/api/shipments'),
+    shipment: (id: number) => req<Shipment>(`/api/shipments/${id}`),
     createShipmentForOrder: (orderId: number) =>
-      $fetch<Shipment>(`/api/shipments/create-for-order/${orderId}`, { method: 'POST' }),
+      req<Shipment>(`/api/shipments/create-for-order/${orderId}`, { method: 'POST' }),
     addTrackingEvent: (shipmentId: number, body: { code: string; location?: string; description?: string }) =>
-      $fetch<Shipment>(`/api/shipments/${shipmentId}/events`, { method: 'POST', body }),
+      req<Shipment>(`/api/shipments/${shipmentId}/events`, { method: 'POST', body }),
 
-    payments: (params?: { method?: string }) => $fetch<Payment[]>('/api/payments', { params }),
+    payments: (params?: { method?: string }) => req<Payment[]>('/api/payments', { params }),
     capturePayment: (id: number) =>
-      $fetch<Payment>(`/api/payments/${id}/capture`, { method: 'POST', body: {} }),
+      req<Payment>(`/api/payments/${id}/capture`, { method: 'POST', body: {} }),
 
-    ledger: () => $fetch<{ entries: LedgerEntry[]; totals_by_type: Record<string, number> }>('/api/finance/ledger'),
-    events: (name?: string) => $fetch<DomainEvent[]>('/api/events', { params: name ? { name } : {} }),
+    ledger: () => req<{ entries: LedgerEntry[]; totals_by_type: Record<string, number> }>('/api/finance/ledger'),
+    events: (name?: string) => req<DomainEvent[]>('/api/events', { params: name ? { name } : {} }),
+
+    // ---- landing page engine (§15) ----
+    landingPages: () => req<LandingPageSummary[]>('/api/landing-pages'),
+    landingPage: (id: number) => req<LandingPage>(`/api/landing-pages/${id}`),
+    blockRegistry: () => req<BlockTypeDef[]>('/api/landing-pages/blocks'),
+    createLandingPage: (body: Record<string, unknown>) =>
+      req<LandingPage>('/api/landing-pages', { method: 'POST', body }),
+    patchLandingPage: (id: number, body: Record<string, unknown>) =>
+      req<LandingPage>(`/api/landing-pages/${id}`, { method: 'PATCH', body }),
+    publishLandingPage: (id: number) =>
+      req<LandingPage>(`/api/landing-pages/${id}/publish`, { method: 'POST', body: {} }),
+    unpublishLandingPage: (id: number) =>
+      req<LandingPage>(`/api/landing-pages/${id}/unpublish`, { method: 'POST', body: {} }),
+    deleteLandingPage: (id: number) =>
+      req<void>(`/api/landing-pages/${id}`, { method: 'DELETE' }),
+
+    // ---- public storefront (§14, no auth) ----
+    publicStore: () => req<PublicStore | null>('/api/public/store'),
+    publicHome: () => req<PublicHome>('/api/public/home'),
+    publicProducts: () => req<PublicProduct[]>('/api/public/products'),
+    publicProduct: (slug: string) => req<PublicProductDetail>(`/api/public/products/${slug}`),
+    publicPage: (slug: string) => req<PublicPage>(`/api/public/pages/${slug}`),
+    submitOrderIntent: (body: { product_slug: string; contact_name: string; contact_phone: string; qty: number; note?: string }) =>
+      req<{ ok: boolean; lead_id: number; message: string }>('/api/public/leads', { method: 'POST', body }),
   }
 }
