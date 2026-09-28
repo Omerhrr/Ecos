@@ -30,6 +30,8 @@ from app.marketing import models as marketing_models  # noqa: F401,E402
 from app.returns import models as returns_models  # noqa: F401,E402
 from app.settlements import models as settlements_models  # noqa: F401,E402
 from app.ai_harness import models as ai_models  # noqa: F401,E402
+from app.notifications import models as notifications_models  # noqa: F401,E402
+from app.procurement import models as procurement_models  # noqa: F401,E402
 
 from app.core.seed import seed_if_empty  # noqa: E402
 from app.core.deps import require_auth  # noqa: E402
@@ -50,6 +52,8 @@ from app.marketing.router import router as marketing_router  # noqa: E402
 from app.returns.router import router as returns_router  # noqa: E402
 from app.settlements.router import router as settlements_router  # noqa: E402
 from app.ai_harness.router import router as ai_router  # noqa: E402
+from app.notifications.router import router as notifications_router  # noqa: E402
+from app.procurement.router import router as procurement_router  # noqa: E402
 from app.analytics.router import router as analytics_router  # noqa: E402
 from app.core.models import DomainEvent  # noqa: E402
 
@@ -109,7 +113,8 @@ for r in [
     auth_router, identity_router, supply_router, catalog_router, storefront_router,
     public_router, crm_router, customers_router, orders_router, logistics_router,
     payments_router, finance_router, landing_pages_router, marketing_router,
-    returns_router, settlements_router, ai_router, analytics_router,
+    returns_router, settlements_router, ai_router, notifications_router,
+    procurement_router, analytics_router,
 ]:
     app.include_router(r, prefix="/api")
 

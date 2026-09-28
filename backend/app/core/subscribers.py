@@ -98,3 +98,11 @@ def register_all() -> None:
     events.subscribe("order.status_changed", _on_order_status_changed)
     events.subscribe("payment.received", _on_payment_received)
     events.subscribe("payment.refunded", _on_payment_refunded)
+
+    # §39 notifications + procurement (Stock Prophet -> suggestions) wiring.
+    # Imported lazily: these modules import domain models that live above core.
+    from app.notifications import subscribers as notification_subscribers
+    from app.procurement import subscribers as procurement_subscribers
+
+    notification_subscribers.register()
+    procurement_subscribers.register()

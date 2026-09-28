@@ -292,6 +292,92 @@ export interface SettlementPreview {
   currencies: string[]
 }
 
+/* ---------------- §39 notifications ---------------- */
+
+export interface EcosNotification {
+  id: number
+  recipient_user_id: number
+  org_id: number | null
+  category: string
+  level: 'info' | 'success' | 'warning' | 'critical'
+  title: string
+  body: string
+  entity_type: string
+  entity_id: number | null
+  meta: Record<string, unknown>
+  read: boolean
+  read_at: string | null
+  created_at: string | null
+}
+
+export interface NotificationPreference {
+  category: string
+  in_app: boolean
+  email: boolean
+  whatsapp: boolean
+  updated_at: string | null
+}
+
+/* ---------------- §21/§22 procurement ---------------- */
+
+export interface ReorderSuggestion {
+  id: number
+  product_id: number
+  product_title: string | null
+  product_stock: number | null
+  supplier_id: number | null
+  supplier_name: string | null
+  supplier_lead_time_days: number | null
+  run_id: number
+  org_id: number | null
+  status: 'open' | 'converted' | 'dismissed' | 'superseded'
+  risk: string
+  weekly_velocity: number
+  weeks_of_cover: number | null
+  stock_at_time: number
+  suggested_qty: number
+  po_id: number | null
+  created_at: string | null
+  resolved_at: string | null
+}
+
+export interface PurchaseOrderLine {
+  id: number
+  product_id: number
+  product_title: string | null
+  qty_ordered: number
+  qty_received: number
+  qty_outstanding: number
+  unit_cost: number
+  line_total: number
+}
+
+export interface PurchaseOrder {
+  id: number
+  po_number: string
+  supplier_id: number
+  supplier_name: string | null
+  supplier_lead_time_days: number | null
+  status: 'draft' | 'submitted' | 'confirmed' | 'received' | 'cancelled'
+  currency: string
+  items_total: number
+  freight: number
+  expected_at: string | null
+  note: string
+  source: string
+  source_run_id: number | null
+  org_id: number | null
+  allowed_transitions: string[]
+  lines?: PurchaseOrderLine[]
+  created_at: string | null
+}
+
+export interface SuggestionRefreshSummary {
+  run_id: number
+  open_suggestions: number
+  new_suggestions: number
+}
+
 /* ---------------- §31+ AI harness ---------------- */
 
 export interface AiInputField {
@@ -585,6 +671,37 @@ export function useApi() {
       req<AiRun[]>('/api/ai/runs', { params: operatorId ? { operator_id: operatorId } : {} }),
     aiRunAction: (id: number, action: 'approve' | 'reject', body?: Record<string, unknown>) =>
       req<AiRun>(`/api/ai/runs/${id}/${action}`, { method: 'POST', body: body ?? {} }),
+
+    // ---- notifications (§39) ----
+    notifications: (params?: { unread_only?: boolean; category?: string; limit?: number }) =>
+      req<EcosNotification[]>('/api/notifications', { params }),
+    unreadCount: () => req<{ unread: number }>('/api/notifications/unread-count'),
+    markNotificationRead: (id: number) =>
+      req<EcosNotification>(`/api/notifications/${id}/read`, { method: 'POST', body: {} }),
+    markAllNotificationsRead: () =>
+      req<{ marked: number }>('/api/notifications/read-all', { method: 'POST', body: {} }),
+    notificationPreferences: () => req<NotificationPreference[]>('/api/notifications/preferences'),
+    updateNotificationPreference: (body: { category: string; in_app?: boolean; email?: boolean; whatsapp?: boolean }) =>
+      req<NotificationPreference>('/api/notifications/preferences', { method: 'PUT', body }),
+    sendTestNotification: () => req<EcosNotification>('/api/notifications/test', { method: 'POST', body: {} }),
+
+    // ---- procurement (§21/§22) ----
+    reorderSuggestions: (status?: string) =>
+      req<ReorderSuggestion[]>('/api/procurement/reorder-suggestions', { params: status ? { status } : {} }),
+    refreshSuggestions: () =>
+      req<SuggestionRefreshSummary>('/api/procurement/reorder-suggestions/refresh', { method: 'POST', body: {} }),
+    dismissSuggestion: (id: number) =>
+      req<ReorderSuggestion>(`/api/procurement/reorder-suggestions/${id}/dismiss`, { method: 'POST', body: {} }),
+    createPoFromSuggestions: (body: { suggestion_ids?: number[]; note?: string }) =>
+      req<PurchaseOrder[]>('/api/procurement/reorder-suggestions/create-po', { method: 'POST', body }),
+    purchaseOrders: (status?: string) =>
+      req<PurchaseOrder[]>('/api/procurement', { params: status ? { status } : {} }),
+    createPurchaseOrder: (body: { supplier_id: number; lines: { product_id: number; qty: number }[]; note?: string }) =>
+      req<PurchaseOrder>('/api/procurement', { method: 'POST', body }),
+    poAction: (id: number, action: 'submit' | 'confirm' | 'cancel') =>
+      req<PurchaseOrder>(`/api/procurement/${id}/${action}`, { method: 'POST', body: {} }),
+    receivePo: (id: number, receipts: Record<number, number>) =>
+      req<PurchaseOrder>(`/api/procurement/${id}/receive`, { method: 'POST', body: { receipts } }),
 
     orders: (params?: { status?: string }) => req<Order[]>('/api/orders', { params }),
     order: (id: number) => req<OrderDetail>(`/api/orders/${id}`),

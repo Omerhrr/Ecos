@@ -37,12 +37,13 @@ DEMO_PASSWORD = "demo1234"
 
 PRODUCTS = [
     # title, category, cost CNY, weight kg, stock, supplier idx
+    # (lean stocks on the two hot movers so Stock Prophet flags real reorders)
     ("Smart Fitness Watch Pro", "electronics", 95.0, 0.25, 120, 0),
     ("Wireless Earbuds X2", "electronics", 62.0, 0.18, 200, 0),
-    ("Portable Neck Fan", "home-appliances", 38.0, 0.42, 150, 1),
+    ("Portable Neck Fan", "home-appliances", 38.0, 0.42, 13, 1),
     ("LED Rechargeable Lamp", "home-appliances", 55.0, 0.65, 90, 1),
     ("360° Rotating Phone Holder", "accessories", 12.5, 0.12, 500, 2),
-    ("Hair Styling Brush Set", "beauty", 48.0, 0.55, 80, 2),
+    ("Hair Styling Brush Set", "beauty", 48.0, 0.55, 15, 2),
 ]
 
 SUPPLIERS = [
@@ -263,6 +264,22 @@ def seed_if_empty(db: Session) -> bool:
         product_id=products[5].id, qty=1, payment_method="online_transfer",
     )
 
+    # --- Sales burst: the hot movers actually move. This gives Stock Prophet
+    # a real 4-week velocity to work with (neck fan + hair brush burn down to
+    # stockout-risk levels; lamp/earbuds stay healthy as contrast) ---
+    burst_plan = (
+        [(products[5].id, 1)] * 9   # hair brush: 9 more units -> stock 5, velocity 2.5/wk
+        + [(products[2].id, 1)] * 8  # neck fan: 8 more units -> stock 4, velocity 2.25/wk
+        + [(products[3].id, 1)] * 2  # lamp: healthy contrast
+        + [(products[1].id, 1)] * 2  # earbuds: healthy contrast
+    )
+    for i, (pid, qty) in enumerate(burst_plan):
+        r = order_service.create_order(
+            db, store_id=store.id, customer_id=customers[i % len(customers)].id,
+            product_id=pid, qty=qty, payment_method="cod" if i % 2 == 0 else "online_transfer",
+        )
+        order_service.transition_order(db, db.get(om.Order, r["id"]), "confirmed")
+
     # --- Returns module (§28): a customer asked to send order 2 back ---
     returns_service.create_return(
         db, order=o2, reason="not_as_described", resolution="refund",
@@ -292,6 +309,20 @@ def seed_if_empty(db: Session) -> bool:
         db, ai_ops["demand_forecaster"], {},
         actor={"user_id": owner.id},
     )
+    # -> ai.run.completed now materialises §33 reorder suggestions automatically
+
+    # --- Procurement (§21/§22): one submitted restock PO; the Stock Prophet
+    # suggestions stay open so the Procurement page has work to act on ---
+    from app.procurement import service as procurement_service
+
+    earbuds = products[1]
+    restock = procurement_service.create_po(
+        db, supplier_id=earbuds.supplier_id,
+        lines=[{"product_id": earbuds.id, "qty": 100}],
+        org_id=operator.id, created_by=owner.id,
+        note="Manual restock — earbuds moving steadily, top up before lead time bites.",
+    )
+    procurement_service.submit_po(db, restock)
 
     # --- Landing page engine (§15) + storefront home (§14) ---
     home_blocks, _ = lp_blocks.sanitize_blocks([

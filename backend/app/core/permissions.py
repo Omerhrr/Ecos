@@ -29,6 +29,7 @@ READ_PERMISSIONS = [
     "marketing:read",
     "returns:read",
     "ai_harness:read",
+    "procurement:read",
     "analytics:read",
 ]
 
@@ -46,6 +47,7 @@ ALL_PERMISSIONS = READ_PERMISSIONS + [
     "returns:write",
     "ai_harness:write",
     "ai_harness:approve",
+    "procurement:write",
     "identity:manage",
 ]
 

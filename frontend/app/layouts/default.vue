@@ -4,10 +4,22 @@
  * Public storefront pages opt into the `public` layout instead.
  */
 const auth = useAuth()
+const api = useApi()
 const mounted = ref(false)
-onMounted(() => {
+const unread = ref(0)
+
+async function pollUnread() {
+  try {
+    unread.value = (await api.unreadCount()).unread
+  }
+  catch { /* signed out or offline — badge stays stale */ }
+}
+
+onMounted(async () => {
   auth.restore()
   mounted.value = true
+  await pollUnread()
+  setInterval(pollUnread, 30_000)
 })
 </script>
 
@@ -25,11 +37,16 @@ onMounted(() => {
         <NuxtLink to="/orders">Orders</NuxtLink>
         <NuxtLink to="/logistics">Logistics</NuxtLink>
         <NuxtLink to="/returns">Returns · RMA</NuxtLink>
+        <NuxtLink to="/procurement">Procurement · POs</NuxtLink>
         <NuxtLink to="/settlements">Settlements</NuxtLink>
         <NuxtLink to="/finance">Finance · Ledger</NuxtLink>
         <NuxtLink to="/marketing">Marketing · Attribution</NuxtLink>
         <NuxtLink to="/ai-harness">AI Harness</NuxtLink>
         <NuxtLink to="/landing-pages">Landing Pages</NuxtLink>
+        <NuxtLink to="/notifications" class="notif-link">
+          <span>Notifications</span>
+          <span v-if="mounted && unread" class="unread-badge">{{ unread > 99 ? '99+' : unread }}</span>
+        </NuxtLink>
         <NuxtLink to="/events">Event Stream</NuxtLink>
       </nav>
       <div class="sidebar-foot">
