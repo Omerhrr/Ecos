@@ -1,2 +1,18 @@
 skills/
 node_modules/
+
+# Python backend
+backend/.venv/
+backend/dev.db
+backend/__pycache__/
+backend/**/__pycache__/
+
+# Nuxt / Nitro
+frontend/.nuxt/
+frontend/.output/
+frontend/.data/
+frontend/dist/
+
+# Env & misc
+.env
+*.log
