@@ -162,6 +162,27 @@ def deploy_operator(db: Session, *, code: str, org_id: int | None, actor: dict) 
     return operator
 
 
+def ensure_operators_deployed(db: Session) -> list[m.AiOperator]:
+    """Backfill: deploy any blueprint an org doesn't run yet (§31-38 bench).
+
+    Called at startup after seeding, so orgs that already adopted the
+    harness gain newly built operators without a manual deploy. Orgs that
+    never deployed anything are left untouched.
+    """
+    created: list[m.AiOperator] = []
+    org_ids = [
+        row[0] for row in db.query(m.AiOperator.org_id).distinct().all() if row[0] is not None
+    ]
+    for org_id in org_ids:
+        existing = {
+            row[0] for row in db.query(m.AiOperator.code).filter(m.AiOperator.org_id == org_id).all()
+        }
+        for code in ops.BLUEPRINTS:
+            if code not in existing:
+                created.append(deploy_operator(db, code=code, org_id=org_id, actor={"user_id": None}))
+    return created
+
+
 def serialize_operator(db: Session, operator: m.AiOperator) -> dict[str, Any]:
     last_run = (
         db.query(m.AiRun)

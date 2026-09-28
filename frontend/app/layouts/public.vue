@@ -35,6 +35,7 @@ onMounted(async () => {
         <nav class="pub-nav">
           <NuxtLink to="/">Home</NuxtLink>
           <NuxtLink to="/products">Products</NuxtLink>
+          <NuxtLink to="/pricing">USD prices</NuxtLink>
           <NuxtLink to="/track">Track order</NuxtLink>
           <NuxtLink to="/cart" class="pub-cart-link">
             Cart

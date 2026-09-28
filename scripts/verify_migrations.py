@@ -28,13 +28,21 @@ tables = set(insp.get_table_names())
 assert "alembic_version" in tables, "alembic_version missing after fresh upgrade"
 print(f"A OK: fresh DB built via migration ({len(tables)} tables incl. alembic_version)")
 
-# --- B: parity between migrated schema and ORM metadata ---
+# --- B: parity between migrated schema and ORM metadata (tables AND columns) ---
 expected = set(Base.metadata.tables.keys())
 missing = expected - tables
 extra = tables - expected - {"alembic_version"}
 assert not missing, f"tables in metadata but not migrated: {missing}"
 assert not extra, f"migrated but not in metadata: {extra}"
-print(f"B OK: migrated schema matches ORM metadata ({len(expected)} domain tables)")
+
+drift = []
+for tname, table in Base.metadata.tables.items():
+    mig_cols = {c["name"] for c in insp.get_columns(tname)}
+    model_cols = set(table.columns.keys())
+    if mig_cols != model_cols:
+        drift.append(f"{tname}: model-only={sorted(model_cols - mig_cols)} migration-only={sorted(mig_cols - model_cols)}")
+assert not drift, "column drift between migrations and models:\n" + "\n".join(drift)
+print(f"B OK: migrated schema matches ORM metadata ({len(expected)} domain tables, columns verified)")
 
 # --- C: legacy adoption (current live-style DB: tables but no version) ---
 LEGACY = "/tmp/ecos_mig_legacy.db"

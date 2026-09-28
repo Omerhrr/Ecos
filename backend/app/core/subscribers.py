@@ -104,7 +104,10 @@ def register_all() -> None:
     from app.notifications import subscribers as notification_subscribers
     from app.procurement import subscribers as procurement_subscribers
     from app.warehouse import subscribers as warehouse_subscribers
+    from app.automation import service as automation_service
 
     notification_subscribers.register()
     procurement_subscribers.register()
     warehouse_subscribers.register()
+    # §41: the automation engine offers every catalog event to operator rules
+    automation_service.register_dispatcher()

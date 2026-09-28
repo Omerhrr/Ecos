@@ -33,24 +33,24 @@ Legend: ✅ core built & verified · 🟡 partial (core exists, gaps listed) · 
 | 26 | Financial Ledger | ✅ | Immutable signed entries for every money event incl. refunds |
 | 27 | Settlement Engine | ✅ | Ledger-derived runs, counterparty buckets, approve/execute/cancel/preview; holds/adjustments/disputes pending |
 | 28 | Returns & Refunds | ✅ | RMA state machine, restock→warehouse movements, ledger refunds; inspection/replacement flows light |
-| 29 | Analytics | 🟡 | Dashboard KPIs + marketing attribution; logistics/financial/product suites missing |
-| 30 | Command Center | 🟡 | Dashboard + notification feed; no "what needs attention" intelligence surface |
-| 31 | Ecos Harness | ✅* | Operator registry, runs w/ token/latency audit, human-in-loop governance — *runs on heuristic fallback (no DeepSeek key)* |
-| 32 | Product Research Operator | ❌ | Not built |
-| 33 | Product Import Operator | ❌ | Not built |
+| 29 | Analytics | ✅ | Dashboard KPIs + attribution + three operator suites (§29): logistics (transit/carrier/stalls), financial (contribution economics from ledger), product (margin/returns/cover) + /analytics page |
+| 30 | Command Center | 🟡 | Dashboard + notification feed + automation escalations; no unified "what needs attention" AI surface yet |
+| 31 | Ecos Harness | ✅* | Operator registry, runs w/ token/latency audit, human-in-loop governance, live-key path hardened (env read at call time, retries, /ai/provider/test, UI probe) — *runs on heuristic fallback until DEEPSEEK_API_KEY is set |
+| 32 | Product Research Operator | ✅ | "Market Scout" — velocity/margin/category-gap scan, advisory; live prose once key is set |
+| 33 | Product Import Operator | ✅ | "Catalog Forger" — parses raw supplier listing → waterfall-priced DRAFT product on approval (human activates in Catalog) |
 | 34 | Landing Page Operator | 🟡 | Launch Scribe generates draft page/copy via §15 engine; not full audience/angle/tracking flow |
 | 35 | Customer Operations Operator | 🟡 | Lead Whisperer drafts replies + status flips; not full monitoring loop |
-| 36 | Growth Operator | ❌ | Not built (attribution report = future data source) |
-| 37 | Logistics Operator | ❌ | Not built (shipment events exist to feed it) |
-| 38 | Business Analyst Operator | ❌ | Not built |
+| 36 | Growth Operator | ✅ | "Growth Pilot" — CPA-ranked budget moves (scale/fix/pause/investigate) from the live attribution report; advisory |
+| 37 | Logistics Operator | ✅ | "Route Guard" — checkpoint-freshness SLA scan; approval raises ops escalation notifications |
+| 38 | Business Analyst Operator | ✅ | "P&L Analyst" — ledger-grounded digest: highlights, risks, recommendations, metrics; advisory |
 | 39 | AI Governance | ✅ | Approval gate, per-domain perms incl. `ai_harness:approve`, full run audit; escalation partial |
 | 40 | Event-Driven Architecture | ✅ | Domain event bus, 25+ event types, 20+ subscriber handlers across domains |
-| 41 | Automation Engine | ❌ | No `automation/` module — WHEN/AND/THEN rules not built (only missing whole subsystem) |
+| 41 | Automation Engine | ✅ | `automation/` module: WHEN/AND/THEN rules on the event bus (25-event catalog, 11 condition ops, 4 action types incl. settlement-draft), cooldowns, dry-run test, per-rule SAVEPOINT isolation, full match audit + /automation UI |
 | 42 | Architecture Philosophy | ✅ | Folder structure mirrors §42 (fulfillment=warehouse, api=main.py) |
 | 43 | Identity & Tenancy | ✅ | Orgs, roles, per-domain permissions, cross-org isolation, platform staff scope |
 | 44 | Security & Audit | 🟡 | Event audit trail + AI run audit; prev/new state capture only on transitions |
 | 45 | Financial Integrity | ✅ | Immutable ledger, settlement stamping, no mutable money records |
-| 46 | Multi-Currency | ❌ | Currency columns (CNY/NGN) exist; no FX rates/conversion/USD anywhere |
+| 46 | Multi-Currency | ✅ | `fx_rates` table + conversion service (direct/inverse/triangulated/static), USD pricing page /pricing, storefront currency param, USD checkout display + FX snapshot on orders; ledger money stays in capture currency (NGN) by design (§45) |
 | 47 | Globalization | ❌ | Country fields only; config-driven country behavior not built |
 | 48 | Network Intelligence | ❌ | Future — needs cross-operator volume |
 | 49 | Ecos as Commerce Graph | ◻ | FK chain exists de facto (§51); graph reasoning is vision |
@@ -68,19 +68,15 @@ Legend: ✅ core built & verified · 🟡 partial (core exists, gaps listed) · 
 | 61 | North-Star Definition | ◻ | Lives in the FastAPI app description |
 | 62 | Final System View | ◻ | Vision framing |
 
-**Score: 24 ✅ core · 14 🟡 partial · 12 ❌ not started · 12 ◻ vision/context**
+**Score: 32 ✅ core · 13 🟡 partial · 7 ❌ not started · 12 ◻ vision/context**
 
 ---
 
-## Remaining engineering list (ranked)
+## Remaining engineering list (ranked, after Task 11)
 
-1. **Automation Engine (§41)** — the only §7 domain with zero code. Deterministic rules on the event bus: `WHEN shipment.delayed AND delay > threshold THEN escalate`, `WHEN return_rate > threshold THEN flag product`, `WHEN order.delivered THEN begin settlement workflow`. Feeds §30's "what needs attention".
-2. **AI live key → real inference (§31)** — user-parked. One env var (`DEEPSEEK_API_KEY` in `backend/.env`), zero code changes; flips all 4 operators to live DeepSeek.
-3. **Missing AI operators (§32, §33, §36, §37, §38)** — Product Research, Product Import, Growth, Logistics, Business Analyst. Framework + governance already exist; each operator = blueprint + heuristic + side effects.
-4. **Multi-currency / USD (§46)** — FX rate table + conversion service, USD storefront pricing, currency-specific balances. Promised for the first corridor (CNY/NGN/USD).
-5. **Analytics suites (§29)** — logistics (delivery time, courier performance), financial (contribution margin, settlement obligations), product (return rate, margin per SKU).
-6. **COD remittance register (§24)** — courier remittance + reconciliation → ledger.
-7. **Catalog depth (§10)** — variants/SKUs, video media.
-8. **Landing page versioning/scheduling + block thumbnails (§15)** — deferred polish.
-9. **Auth token refresh (§43)** — deferred polish.
-10. **Later bets (§11, §18, §22, §47, §48, §53)** — discovery, customer intelligence, route engine, globalization config, network intelligence, Ascendra referral.
+1. **COD remittance register (§24)** — courier remittance + reconciliation → ledger.
+2. **Catalog depth (§10)** — variants/SKUs, video media.
+3. **Landing page versioning/scheduling + block thumbnails (§15)** — deferred polish.
+4. **Auth token refresh (§43)** — deferred polish.
+5. **DeepSeek live key (§31)** — user-held; everything else is wired (drop key into `.env`, restart, harness flips live; `/ai/provider/test` + UI probe verify).
+6. **Later bets (§11, §18, §22, §47, §48, §53)** — demand-driven discovery, customer intelligence, route engine / multi-carrier, globalization config, network intelligence, Ascendra referral.

@@ -1,0 +1,951 @@
+     1→/**
+     2→ * Ecos API client + shared types.
+     3→ * The Nitro dev proxy forwards /api/** to FastAPI on :8000.
+     4→ *
+     5→ * All calls run through `req`, an authed $fetch instance: it attaches the
+     6→ * Bearer token and redirects to /login on 401 from admin-only paths
+     7→ * (plan §43).
+     8→ */
+     9→
+    10→export interface PricingInfo {
+    11→  ecos_price_ngn: number
+    12→  fx_rate: number
+    13→  components: Record<string, number>
+    14→}
+    15→
+    16→export interface Product {
+    17→  id: number
+    18→  slug: string | null
+    19→  supplier_id: number
+    20→  supplier_name: string | null
+    21→  supplier_lead_time_days: number | null
+    22→  title: string
+    23→  description: string
+    24→  category: string
+    25→  brand: string
+    26→  currency: string
+    27→  supplier_cost: number
+    28→  weight_kg: number
+    29→  markup_pct: number | null
+    30→  status: string
+    31→  stock: number
+    32→  country_of_origin: string
+    33→  images: string[]
+    34→  specs: Record<string, unknown>
+    35→  pricing: PricingInfo
+    36→}
+    37→
+    38→export interface Supplier {
+    39→  id: number
+    40→  name: string
+    41→  country: string
+    42→  city: string
+    43→  status: string
+    44→  rating: number
+    45→  lead_time_days: number
+    46→}
+    47→
+    48→export interface Store {
+    49→  id: number
+    50→  org_id: number
+    51→  name: string
+    52→  slug: string
+    53→  country: string
+    54→  currency: string
+    55→  status: string
+    56→}
+    57→
+    58→export interface Lead {
+    59→  id: number
+    60→  store_id: number
+    61→  store_name: string | null
+    62→  product_id: number
+    63→  product_title: string | null
+    64→  customer_id: number | null
+    65→  contact_name: string
+    66→  contact_phone: string
+    67→  status: string
+    68→  source: string
+    69→  campaign: string
+    70→  campaign_id: number | null
+    71→  campaign_name: string | null
+    72→  utm: Record<string, string>
+    73→  assigned_agent: string
+    74→  notes: string
+    75→  created_at: string
+    76→}
+    77→
+    78→export interface OrderItem {
+    79→  id: number
+    80→  product_id: number
+    81→  title: string
+    82→  qty: number
+    83→  unit_price: number
+    84→  supplier_cost_cny: number
+    85→  weight_kg?: number
+    86→}
+    87→
+    88→export interface Order {
+    89→  id: number
+    90→  store_id: number
+    91→  store_name: string | null
+    92→  customer_id: number
+    93→  customer_name: string | null
+    94→  customer_phone: string | null
+    95→  status: string
+    96→  payment_method: string
+    97→  payment_status: string
+    98→  currency: string
+    99→  items_total: number
+   100→  delivery_fee: number
+   101→  total: number
+   102→  created_at: string
+   103→}
+   104→
+   105→export interface OrderDetail extends Order {
+   106→  customer: {
+   107→    id: number
+   108→    full_name: string
+   109→    phone: string
+   110→    address: string
+   111→    city: string
+   112→    state: string
+   113→    country: string
+   114→  } | null
+   115→  items: OrderItem[]
+   116→  allowed_transitions: string[]
+   117→}
+   118→
+   119→export interface Shipment {
+   120→  id: number
+   121→  order_id: number
+   122→  status: string
+   123→  carrier: string
+   124→  tracking_code: string
+   125→  origin_country: string
+   126→  destination_country: string
+   127→  recipient_name: string
+   128→  recipient_phone: string
+   129→  recipient_address: string
+   130→  weight_kg: number
+   131→  created_at: string
+   132→  delivered_at: string | null
+   133→  timeline: TrackingEvent[]
+   134→}
+   135→
+   136→export interface TrackingEvent {
+   137→  id: number
+   138→  code: string
+   139→  description: string
+   140→  location: string
+   141→  occurred_at: string
+   142→}
+   143→
+   144→export interface Payment {
+   145→  id: number
+   146→  order_id: number
+   147→  method: string
+   148→  status: string
+   149→  amount: number
+   150→  currency: string
+   151→  provider: string
+   152→  reference: string
+   153→  reconciled: boolean
+   154→  collected_at: string | null
+   155→  created_at: string
+   156→}
+   157→
+   158→export interface LedgerEntry {
+   159→  id: number
+   160→  order_id: number | null
+   161→  entry_type: string
+   162→  party: string
+   163→  amount: number
+   164→  currency: string
+   165→  memo: string
+   166→  created_at: string
+   167→}
+   168→
+   169→export interface DomainEvent {
+   170→  id: number
+   171→  name: string
+   172→  payload: Record<string, unknown>
+   173→  created_at: string
+   174→}
+   175→
+   176→/* ---------------- §16 marketing attribution ---------------- */
+   177→
+   178→export interface Campaign {
+   179→  id: number
+   180→  org_id: number
+   181→  name: string
+   182→  channel: string
+   183→  status: string
+   184→  utm_campaign: string
+   185→  landing_page_slug: string
+   186→  budget_ngn: number
+   187→  notes: string
+   188→  created_at: string
+   189→}
+   190→
+   191→export interface CampaignRow {
+   192→  id: number
+   193→  name: string
+   194→  channel: string
+   195→  status: string
+   196→  utm_campaign: string
+   197→  landing_page_slug: string
+   198→  spend_ngn: number
+   199→  leads: number
+   200→  converted_leads: number
+   201→  conversion_rate: number
+   202→  orders: number
+   203→  revenue_ngn: number
+   204→  cpa_ngn: number | null
+   205→  cost_per_lead_ngn: number | null
+   206→}
+   207→
+   208→export interface SourceRow {
+   209→  source: string
+   210→  leads: number
+   211→  converted_leads: number
+   212→  orders: number
+   213→  revenue_ngn: number
+   214→}
+   215→
+   216→export interface AttributionReport {
+   217→  campaigns: CampaignRow[]
+   218→  by_source: SourceRow[]
+   219→  totals: {
+   220→    leads: number
+   221→    converted_leads: number
+   222→    conversion_rate: number
+   223→    revenue_ngn: number
+   224→    spend_ngn: number
+   225→    attributed_lead_pct: number
+   226→  }
+   227→}
+   228→
+   229→/* ---------------- §28 returns ---------------- */
+   230→
+   231→export interface ReturnOrder {
+   232→  id: number
+   233→  rma_number: string
+   234→  order_id: number
+   235→  store_id: number
+   236→  customer_id: number
+   237→  customer_name: string | null
+   238→  order_total: number | null
+   239→  order_status: string | null
+   240→  status: string
+   241→  reason: string
+   242→  resolution: string
+   243→  restock: boolean
+   244→  refund_amount: number
+   245→  currency: string
+   246→  notes: string
+   247→  allowed_transitions: string[]
+   248→  created_at: string
+   249→}
+   250→
+   251→export interface EligibleOrder {
+   252→  id: number
+   253→  status: string
+   254→  total: number
+   255→  currency: string
+   256→  payment_status: string
+   257→  customer_name: string | null
+   258→}
+   259→
+   260→/* ---------------- §27 settlements ---------------- */
+   261→
+   262→export interface SettlementLine {
+   263→  id: number
+   264→  entry_type: string
+   265→  party: string
+   266→  counterparty: string
+   267→  currency: string
+   268→  amount: number
+   269→  entry_count: number
+   270→  entry_ids: number[]
+   271→}
+   272→
+   273→export interface SettlementRun {
+   274→  id: number
+   275→  run_number: string
+   276→  org_id: number | null
+   277→  status: 'draft' | 'approved' | 'executed' | 'cancelled'
+   278→  currency: string
+   279→  total_amount: number
+   280→  entry_count: number
+   281→  line_count: number
+   282→  note: string
+   283→  executed_at: string | null
+   284→  created_at: string | null
+   285→  lines?: SettlementLine[]
+   286→}
+   287→
+   288→export interface SettlementPreview {
+   289→  lines: SettlementLine[]
+   290→  total_amount: number
+   291→  entry_count: number
+   292→  currencies: string[]
+   293→}
+   294→
+   295→/* ---------------- §39 notifications ---------------- */
+   296→
+   297→export interface EcosNotification {
+   298→  id: number
+   299→  recipient_user_id: number
+   300→  org_id: number | null
+   301→  category: string
+   302→  level: 'info' | 'success' | 'warning' | 'critical'
+   303→  title: string
+   304→  body: string
+   305→  entity_type: string
+   306→  entity_id: number | null
+   307→  meta: Record<string, unknown>
+   308→  read: boolean
+   309→  read_at: string | null
+   310→  created_at: string | null
+   311→}
+   312→
+   313→export interface NotificationPreference {
+   314→  category: string
+   315→  in_app: boolean
+   316→  email: boolean
+   317→  whatsapp: boolean
+   318→  updated_at: string | null
+   319→}
+   320→
+   321→/* ---------------- §21/§22 procurement ---------------- */
+   322→
+   323→export interface ReorderSuggestion {
+   324→  id: number
+   325→  product_id: number
+   326→  product_title: string | null
+   327→  product_stock: number | null
+   328→  supplier_id: number | null
+   329→  supplier_name: string | null
+   330→  supplier_lead_time_days: number | null
+   331→  run_id: number
+   332→  org_id: number | null
+   333→  status: 'open' | 'converted' | 'dismissed' | 'superseded'
+   334→  risk: string
+   335→  weekly_velocity: number
+   336→  weeks_of_cover: number | null
+   337→  stock_at_time: number
+   338→  suggested_qty: number
+   339→  po_id: number | null
+   340→  created_at: string | null
+   341→  resolved_at: string | null
+   342→}
+   343→
+   344→export interface PurchaseOrderLine {
+   345→  id: number
+   346→  product_id: number
+   347→  product_title: string | null
+   348→  qty_ordered: number
+   349→  qty_received: number
+   350→  qty_outstanding: number
+   351→  unit_cost: number
+   352→  line_total: number
+   353→}
+   354→
+   355→export interface PurchaseOrder {
+   356→  id: number
+   357→  po_number: string
+   358→  supplier_id: number
+   359→  supplier_name: string | null
+   360→  supplier_lead_time_days: number | null
+   361→  status: 'draft' | 'submitted' | 'confirmed' | 'received' | 'cancelled'
+   362→  currency: string
+   363→  items_total: number
+   364→  freight: number
+   365→  expected_at: string | null
+   366→  note: string
+   367→  source: string
+   368→  source_run_id: number | null
+   369→  org_id: number | null
+   370→  allowed_transitions: string[]
+   371→  lines?: PurchaseOrderLine[]
+   372→  created_at: string | null
+   373→}
+   374→
+   375→export interface SuggestionRefreshSummary {
+   376→  run_id: number
+   377→  open_suggestions: number
+   378→  new_suggestions: number
+   379→}
+   380→
+   381→/* ---------------- §31+ AI harness ---------------- */
+   382→
+   383→export interface AiInputField {
+   384→  key: string
+   385→  label: string
+   386→  type: string
+   387→  required: boolean
+   388→}
+   389→
+   390→export interface AiBlueprint {
+   391→  code: string
+   392→  name: string
+   393→  role_description: string
+   394→  advisory: boolean
+   395→  input_fields: AiInputField[]
+   396→}
+   397→
+   398→export interface AiOperator {
+   399→  id: number
+   400→  org_id: number | null
+   401→  code: string
+   402→  name: string
+   403→  role_description: string
+   404→  autonomy: string
+   405→  status: 'active' | 'paused'
+   406→  input_fields: AiInputField[]
+   407→  advisory: boolean
+   408→  runs_total: number
+   409→  runs_pending: number
+   410→  last_run_id: number | null
+   411→  last_run_status: string | null
+   412→  last_run_at: string | null
+   413→  created_at: string | null
+   414→}
+   415→
+   416→export interface AiRun {
+   417→  id: number
+   418→  operator_id: number
+   419→  operator_name: string | null
+   420→  operator_code: string | null
+   421→  status: 'succeeded' | 'failed'
+   422→  proposal_status: 'pending' | 'approved' | 'rejected' | 'applied' | 'advisory' | null
+   423→  input: Record<string, unknown>
+   424→  output: Record<string, unknown>
+   425→  error: string
+   426→  provider: string
+   427→  model: string
+   428→  prompt_tokens: number
+   429→  completion_tokens: number
+   430→  latency_ms: number
+   431→  approved_by: number | null
+   432→  approved_at: string | null
+   433→  created_at: string
+   434→}
+   435→
+   436→export interface AiProviderInfo {
+   437→  provider: 'deepseek' | 'heuristic-fallback'
+   438→  model: string
+   439→  key_configured: boolean
+   440→  base_url: string | null
+   441→}
+   442→
+   443→export interface Summary {
+   444→  revenue_ngn: number
+   445→  cod_pending_ngn: number
+   446→  orders_total: number
+   447→  orders_delivered: number
+   448→  orders_in_flight: number
+   449→  orders_problem: number
+   450→  delivery_rate: number
+   451→  aov_ngn: number
+   452→  leads_total: number
+   453→  leads_active: number
+   454→  lead_conversion: number
+   455→}
+   456→
+   457→export interface Funnel {
+   458→  pipeline: { status: string; count: number }[]
+   459→  exits: { status: string; count: number }[]
+   460→}
+   461→
+   462→export interface TopProduct {
+   463→  product_id: number
+   464→  title: string
+   465→  units: number
+   466→  revenue_ngn: number
+   467→}
+   468→
+   469→/* ---------------- §15 landing pages ---------------- */
+   470→
+   471→export interface BlockFieldDef {
+   472→  key: string
+   473→  label: string
+   474→  ftype: 'text' | 'textarea' | 'url' | 'color' | 'select' | 'number' | 'lines' | 'csv_ids'
+   475→  options: string[] | null
+   476→  default: string
+   477→  hint: string
+   478→}
+   479→
+   480→export interface BlockTypeDef {
+   481→  type: string
+   482→  label: string
+   483→  fields: BlockFieldDef[]
+   484→}
+   485→
+   486→export interface LandingPageBlock {
+   487→  id: string
+   488→  type: string
+   489→  [key: string]: unknown
+   490→}
+   491→
+   492→export interface LandingPageSummary {
+   493→  id: number
+   494→  org_id: number
+   495→  slug: string
+   496→  title: string
+   497→  status: 'draft' | 'published'
+   498→  block_count: number
+   499→  updated_at: string | null
+   500→  published_at: string | null
+   501→}
+   502→
+   503→export interface LandingPage extends LandingPageSummary {
+   504→  blocks: LandingPageBlock[]
+   505→  theme: { primary?: string }
+   506→  seo: { title?: string; description?: string; og_image?: string }
+   507→}
+   508→
+   509→/* ---------------- §14 public storefront ---------------- */
+   510→
+   511→export interface PublicProduct {
+   512→  id: number
+   513→  slug: string | null
+   514→  title: string
+   515→  category: string
+   516→  brand: string
+   517→  price_ngn: number
+   518→  image: string | null
+   519→  images: string[]
+   520→  in_stock: boolean
+   521→}
+   522→
+   523→export interface PublicProductDetail extends PublicProduct {
+   524→  description: string
+   525→  specs: Record<string, unknown>
+   526→}
+   527→
+   528→export interface PublicStore {
+   529→  id: number
+   530→  name: string
+   531→  slug: string
+   532→  country: string
+   533→  currency: string
+   534→}
+   535→
+   536→export interface PublicHome {
+   537→  store: PublicStore
+   538→  page: {
+   539→    id: number
+   540→    slug: string
+   541→    title: string
+   542→    blocks: LandingPageBlock[]
+   543→    theme: { primary?: string }
+   544→    seo: Record<string, string>
+   545→  } | null
+   546→  products: PublicProduct[]
+   547→}
+   548→
+   549→export interface PublicPage {
+   550→  id: number
+   551→  slug: string
+   552→  title: string
+   553→  blocks: LandingPageBlock[]
+   554→  theme: { primary?: string }
+   555→  seo: Record<string, string>
+   556→}
+   557→
+   558→/* ---------------- §39 notifications + §39 Phase 3 outbox ---------------- */
+   559→
+   560→export interface OutboxRow {
+   561→  id: number
+   562→  org_id: number | null
+   563→  user_id: number
+   564→  channel: 'email' | 'whatsapp'
+   565→  recipient: string
+   566→  category: string
+   567→  subject: string
+   568→  body: string
+   569→  notification_id: number | null
+   570→  status: 'queued' | 'sent' | 'failed' | 'skipped'
+   571→  attempts: number
+   572→  max_attempts: number
+   573→  provider: string
+   574→  provider_ref: string
+   575→  last_error: string
+   576→  available_at: string | null
+   577→  sent_at: string | null
+   578→  created_at: string | null
+   579→}
+   580→
+   581→export interface OutboxStats {
+   582→  providers: { email: string; whatsapp: string }
+   583→  by_channel: Record<string, { queued: number; sent: number; failed: number; total: number }>
+   584→}
+   585→
+   586→/* ---------------- §22 warehouse / fulfillment ---------------- */
+   587→
+   588→export interface WarehouseInfo {
+   589→  id: number
+   590→  code: string
+   591→  name: string
+   592→  city: string
+   593→  country: string
+   594→  address: string
+   595→  status: string
+   596→  is_default: boolean
+   597→  org_id: number | null
+   598→  sku_count: number
+   599→  units_on_hand: number
+   600→  open_waves: number
+   601→  created_at: string | null
+   602→}
+   603→
+   604→export interface StockRow {
+   605→  id: number
+   606→  warehouse_id: number
+   607→  warehouse_code: string | null
+   608→  warehouse_name: string | null
+   609→  product_id: number
+   610→  product_title: string | null
+   611→  product_stock: number | null
+   612→  on_hand: number
+   613→  reserved: number
+   614→  available: number
+   615→  updated_at: string | null
+   616→}
+   617→
+   618→export interface StockMovementRow {
+   619→  id: number
+   620→  warehouse_id: number
+   621→  warehouse_code: string | null
+   622→  product_id: number
+   623→  product_title: string | null
+   624→  movement_type: 'receipt' | 'pick' | 'adjustment' | 'transfer_in' | 'transfer_out' | 'return_restock'
+   625→  qty: number
+   626→  balance_after: number
+   627→  reference_type: string
+   628→  reference_id: number | null
+   629→  note: string
+   630→  created_by: number | null
+   631→  created_at: string | null
+   632→}
+   633→
+   634→export interface PickLineRow {
+   635→  id: number
+   636→  order_id: number
+   637→  product_id: number
+   638→  title: string
+   639→  qty: number
+   640→  picked_qty: number
+   641→  status: 'pending' | 'picked' | 'packed'
+   642→}
+   643→
+   644→export interface PickWave {
+   645→  id: number
+   646→  wave_number: string
+   647→  warehouse_id: number
+   648→  warehouse_code: string | null
+   649→  warehouse_name: string | null
+   650→  org_id: number | null
+   651→  status: 'open' | 'picking' | 'packed' | 'completed' | 'cancelled'
+   652→  order_count: number
+   653→  note: string
+   654→  created_by: number | null
+   655→  picked_at: string | null
+   656→  packed_at: string | null
+   657→  completed_at: string | null
+   658→  cancelled_at: string | null
+   659→  created_at: string | null
+   660→  allowed_transitions: string[]
+   661→  lines?: PickLineRow[]
+   662→}
+   663→
+   664→/* ---------------- §14 checkout (public, no auth) ---------------- */
+   665→
+   666→export interface CheckoutQuote {
+   667→  currency: string
+   668→  lines: { product_slug: string; title: string; qty: number; unit_price: number; line_total: number; in_stock: boolean }[]
+   669→  items_total: number
+   670→  delivery_fee: number
+   671→  total: number
+   672→}
+   673→
+   674→export interface CheckoutResult {
+   675→  ok: boolean
+   676→  order_id: number
+   677→  status: string
+   678→  total: number
+   679→  currency: string
+   680→  payment_method: string
+   681→  customer_id: number
+   682→  message: string
+   683→}
+   684→
+   685→export interface TrackingCheckpoint {
+   686→  code: string
+   687→  description: string
+   688→  location: string
+   689→  occurred_at: string | null
+   690→}
+   691→
+   692→export interface PublicShipment {
+   693→  tracking_code: string
+   694→  carrier: string
+   695→  status: string
+   696→  created_at: string | null
+   697→  delivered_at: string | null
+   698→  tracking_events: TrackingCheckpoint[]
+   699→}
+   700→
+   701→export interface PublicOrderStatus {
+   702→  order_id: number
+   703→  order_number: string
+   704→  status: string
+   705→  payment_method: string
+   706→  payment_status: string
+   707→  total: number
+   708→  currency: string
+   709→  placed_at: string | null
+   710→  items: { title: string; qty: number; unit_price: number }[]
+   711→  shipment: PublicShipment | null
+   712→}
+   713→
+   714→/* ---------------- §43 auth ---------------- */
+   715→
+   716→export interface LoginResponse {
+   717→  token: string
+   718→  user: {
+   719→    id: number
+   720→    org_id: number
+   721→    name: string
+   722→    email: string
+   723→    role: string
+   724→    is_active: boolean
+   725→  }
+   726→  org: { id: number; name: string; type: string; country: string; currency: string }
+   727→  permissions: string[]
+   728→}
+   729→
+   730→const PUBLIC_PATHS = ['/', '/login', '/lp', '/products', '/cart']
+   731→
+   732→function isPublicPath(path: string) {
+   733→  if (path === '/' || path === '/login' || path === '/cart') return true
+   734→  return PUBLIC_PATHS.some(p => p !== '/' && path.startsWith(p))
+   735→}
+   736→
+   737→export function useApi() {
+   738→  const req = $fetch.create({
+   739→    onRequest({ options }) {
+   740→      if (import.meta.client) {
+   741→        const token = localStorage.getItem('ecos:token')
+   742→        if (token) {
+   743→          const headers = new Headers(options.headers as HeadersInit | undefined)
+   744→          headers.set('Authorization', `Bearer ${token}`)
+   745→          options.headers = headers
+   746→        }
+   747→      }
+   748→    },
+   749→    onResponseError({ response }) {
+   750→      if (
+   751→        response.status === 401
+   752→        && import.meta.client
+   753→        && !isPublicPath(window.location.pathname)
+   754→      ) {
+   755→        localStorage.removeItem('ecos:token')
+   756→        navigateTo('/login')
+   757→      }
+   758→    },
+   759→  })
+   760→
+   761→  return {
+   762→    // ---- auth (§43) ----
+   763→    login: (email: string, password: string) =>
+   764→      req<LoginResponse>('/api/auth/login', { method: 'POST', body: { email, password } }),
+   765→    me: () => req<LoginResponse>('/api/auth/me'),
+   766→    createUser: (body: Record<string, unknown>) =>
+   767→      req<Record<string, unknown>>('/api/users', { method: 'POST', body }),
+   768→
+   769→    // ---- analytics ----
+   770→    summary: () => req<Summary>('/api/analytics/summary'),
+   771→    funnel: () => req<Funnel>('/api/analytics/funnel'),
+   772→    topProducts: () => req<TopProduct[]>('/api/analytics/top-products'),
+   773→
+   774→    suppliers: () => req<Supplier[]>('/api/suppliers'),
+   775→    stores: () => req<Store[]>('/api/stores'),
+   776→
+   777→    products: (params?: { status?: string }) => req<Product[]>('/api/products', { params }),
+   778→    createProduct: (body: Partial<Product>) =>
+   779→      req<Product>('/api/products', { method: 'POST', body }),
+   780→    patchProduct: (id: number, body: Record<string, unknown>) =>
+   781→      req<Product>(`/api/products/${id}`, { method: 'PATCH', body }),
+   782→
+   783→    leads: () => req<Lead[]>('/api/leads'),
+   784→    createLead: (body: Record<string, unknown>) =>
+   785→      req<Lead>('/api/leads', { method: 'POST', body }),
+   786→    patchLead: (id: number, body: Record<string, unknown>) =>
+   787→      req<Lead>(`/api/leads/${id}`, { method: 'PATCH', body }),
+   788→    convertLead: (id: number) =>
+   789→      req<{ order_id: number }>(`/api/leads/${id}/convert`, { method: 'POST' }),
+   790→
+   791→    // ---- marketing attribution (§16) ----
+   792→    campaigns: () => req<Campaign[]>('/api/marketing/campaigns'),
+   793→    createCampaign: (body: Record<string, unknown>) =>
+   794→      req<Campaign>('/api/marketing/campaigns', { method: 'POST', body }),
+   795→    patchCampaign: (id: number, body: Record<string, unknown>) =>
+   796→      req<Campaign>(`/api/marketing/campaigns/${id}`, { method: 'PATCH', body }),
+   797→    attribution: () => req<AttributionReport>('/api/marketing/attribution'),
+   798→
+   799→    // ---- returns (§28) ----
+   800→    returns: () => req<ReturnOrder[]>('/api/returns'),
+   801→    eligibleOrders: () => req<EligibleOrder[]>('/api/returns/eligible-orders'),
+   802→    createReturn: (body: Record<string, unknown>) =>
+   803→      req<ReturnOrder>('/api/returns', { method: 'POST', body }),
+   804→    returnAction: (id: number, action: 'approve' | 'reject' | 'receive' | 'refund' | 'close', body?: Record<string, unknown>) =>
+   805→      req<ReturnOrder>(`/api/returns/${id}/${action}`, { method: 'POST', body: body ?? {} }),
+   806→
+   807→    // ---- settlements (§27) ----
+   808→    settlementPreview: () => req<SettlementPreview>('/api/settlements/preview'),
+   809→    settlements: () => req<SettlementRun[]>('/api/settlements'),
+   810→    settlement: (id: number) => req<SettlementRun>(`/api/settlements/${id}`),
+   811→    buildSettlement: (body?: Record<string, unknown>) =>
+   812→      req<SettlementRun>('/api/settlements', { method: 'POST', body: body ?? {} }),
+   813→    settlementAction: (id: number, action: 'approve' | 'execute' | 'cancel') =>
+   814→      req<SettlementRun>(`/api/settlements/${id}/${action}`, { method: 'POST', body: {} }),
+   815→
+   816→    // ---- AI harness (§31+, DeepSeek) ----
+   817→    aiProvider: () => req<AiProviderInfo>('/api/ai/provider'),
+   818→    aiRegistry: () => req<AiBlueprint[]>('/api/ai/registry'),
+   819→    aiOperators: () => req<AiOperator[]>('/api/ai/operators'),
+   820→    deployAiOperator: (code: string) =>
+   821→      req<AiOperator>('/api/ai/operators', { method: 'POST', body: { code } }),
+   822→    patchAiOperator: (id: number, body: Record<string, unknown>) =>
+   823→      req<AiOperator>(`/api/ai/operators/${id}`, { method: 'PATCH', body }),
+   824→    runAiOperator: (id: number, params: Record<string, unknown>) =>
+   825→      req<AiRun>(`/api/ai/operators/${id}/run`, { method: 'POST', body: { params } }),
+   826→    aiRuns: (operatorId?: number) =>
+   827→      req<AiRun[]>('/api/ai/runs', { params: operatorId ? { operator_id: operatorId } : {} }),
+   828→    aiRunAction: (id: number, action: 'approve' | 'reject', body?: Record<string, unknown>) =>
+   829→      req<AiRun>(`/api/ai/runs/${id}/${action}`, { method: 'POST', body: body ?? {} }),
+   830→
+   831→    // ---- notifications (§39) ----
+   832→    notifications: (params?: { unread_only?: boolean; category?: string; limit?: number }) =>
+   833→      req<EcosNotification[]>('/api/notifications', { params }),
+   834→    unreadCount: () => req<{ unread: number }>('/api/notifications/unread-count'),
+   835→    markNotificationRead: (id: number) =>
+   836→      req<EcosNotification>(`/api/notifications/${id}/read`, { method: 'POST', body: {} }),
+   837→    markAllNotificationsRead: () =>
+   838→      req<{ marked: number }>('/api/notifications/read-all', { method: 'POST', body: {} }),
+   839→    notificationPreferences: () => req<NotificationPreference[]>('/api/notifications/preferences'),
+   840→    updateNotificationPreference: (body: { category: string; in_app?: boolean; email?: boolean; whatsapp?: boolean }) =>
+   841→      req<NotificationPreference>('/api/notifications/preferences', { method: 'PUT', body }),
+   842→    sendTestNotification: () => req<EcosNotification>('/api/notifications/test', { method: 'POST', body: {} }),
+   843→
+   844→    // ---- §39 Phase 3 outbound channels ----
+   845→    outbox: (params?: { channel?: string; status?: string; limit?: number }) =>
+   846→      req<OutboxRow[]>('/api/notifications/outbox', { params }),
+   847→    outboxStats: () => req<OutboxStats>('/api/notifications/outbox/stats'),
+   848→    processOutbox: () =>
+   849→      req<{ processed: number; sent: number; failed: number; retried: number }>('/api/notifications/outbox/process', { method: 'POST', body: {} }),
+   850→
+   851→    // ---- procurement (§21/§22) ----
+   852→    reorderSuggestions: (status?: string) =>
+   853→      req<ReorderSuggestion[]>('/api/procurement/reorder-suggestions', { params: status ? { status } : {} }),
+   854→    refreshSuggestions: () =>
+   855→      req<SuggestionRefreshSummary>('/api/procurement/reorder-suggestions/refresh', { method: 'POST', body: {} }),
+   856→    dismissSuggestion: (id: number) =>
+   857→      req<ReorderSuggestion>(`/api/procurement/reorder-suggestions/${id}/dismiss`, { method: 'POST', body: {} }),
+   858→    createPoFromSuggestions: (body: { suggestion_ids?: number[]; note?: string }) =>
+   859→      req<PurchaseOrder[]>('/api/procurement/reorder-suggestions/create-po', { method: 'POST', body }),
+   860→    purchaseOrders: (status?: string) =>
+   861→      req<PurchaseOrder[]>('/api/procurement', { params: status ? { status } : {} }),
+   862→    createPurchaseOrder: (body: { supplier_id: number; lines: { product_id: number; qty: number }[]; note?: string }) =>
+   863→      req<PurchaseOrder>('/api/procurement', { method: 'POST', body }),
+   864→    poAction: (id: number, action: 'submit' | 'confirm' | 'cancel') =>
+   865→      req<PurchaseOrder>(`/api/procurement/${id}/${action}`, { method: 'POST', body: {} }),
+   866→    receivePo: (id: number, receipts: Record<number, number>, warehouseId?: number) =>
+   867→      req<PurchaseOrder>(`/api/procurement/${id}/receive`, { method: 'POST', body: { receipts, warehouse_id: warehouseId ?? null } }),
+   868→
+   869→    // ---- warehouse / fulfillment (§22) ----
+   870→    warehouses: () => req<WarehouseInfo[]>('/api/warehouse'),
+   871→    createWarehouse: (body: { name: string; city?: string; country?: string; address?: string; is_default?: boolean }) =>
+   872→      req<WarehouseInfo>('/api/warehouse', { method: 'POST', body }),
+   873→    stockOverview: (params?: { warehouse_id?: number; product_id?: number }) =>
+   874→      req<StockRow[]>('/api/warehouse/overview', { params }),
+   875→    stockMovements: (params?: { warehouse_id?: number; product_id?: number; movement_type?: string; limit?: number }) =>
+   876→      req<StockMovementRow[]>('/api/warehouse/movements', { params }),
+   877→    adjustStock: (body: { warehouse_id: number; product_id: number; delta: number; reason: string }) =>
+   878→      req<{ ok: boolean }>('/api/warehouse/adjust', { method: 'POST', body }),
+   879→    transferStock: (body: { from_warehouse_id: number; to_warehouse_id: number; product_id: number; qty: number }) =>
+   880→      req<{ ok: boolean }>('/api/warehouse/transfer', { method: 'POST', body }),
+   881→    pickWaves: (status?: string) =>
+   882→      req<PickWave[]>('/api/warehouse/waves', { params: status ? { status } : {} }),
+   883→    createPickWave: (body: { order_ids: number[]; warehouse_id?: number; note?: string }) =>
+   884→      req<PickWave>('/api/warehouse/waves', { method: 'POST', body }),
+   885→    waveAction: (id: number, action: 'pick' | 'pack' | 'complete' | 'cancel') =>
+   886→      req<PickWave>(`/api/warehouse/waves/${id}/${action}`, { method: 'POST', body: {} }),
+   887→
+   888→    orders: (params?: { status?: string }) => req<Order[]>('/api/orders', { params }),
+   889→    order: (id: number) => req<OrderDetail>(`/api/orders/${id}`),
+   890→    createOrder: (body: Record<string, unknown>) =>
+   891→      req<{ id: number }>('/api/orders', { method: 'POST', body }),
+   892→    transitionOrder: (id: number, status: string) =>
+   893→      req<OrderDetail>(`/api/orders/${id}/transition`, { method: 'POST', body: { status } }),
+   894→
+   895→    shipments: () => req<Shipment[]>('/api/shipments'),
+   896→    shipment: (id: number) => req<Shipment>(`/api/shipments/${id}`),
+   897→    createShipmentForOrder: (orderId: number) =>
+   898→      req<Shipment>(`/api/shipments/create-for-order/${orderId}`, { method: 'POST' }),
+   899→    addTrackingEvent: (shipmentId: number, body: { code: string; location?: string; description?: string }) =>
+   900→      req<Shipment>(`/api/shipments/${shipmentId}/events`, { method: 'POST', body }),
+   901→
+   902→    payments: (params?: { method?: string }) => req<Payment[]>('/api/payments', { params }),
+   903→    capturePayment: (id: number) =>
+   904→      req<Payment>(`/api/payments/${id}/capture`, { method: 'POST', body: {} }),
+   905→
+   906→    ledger: () => req<{ entries: LedgerEntry[]; totals_by_type: Record<string, number> }>('/api/finance/ledger'),
+   907→    events: (name?: string) => req<DomainEvent[]>('/api/events', { params: name ? { name } : {} }),
+   908→
+   909→    // ---- landing page engine (§15) ----
+   910→    landingPages: () => req<LandingPageSummary[]>('/api/landing-pages'),
+   911→    landingPage: (id: number) => req<LandingPage>(`/api/landing-pages/${id}`),
+   912→    blockRegistry: () => req<BlockTypeDef[]>('/api/landing-pages/blocks'),
+   913→    createLandingPage: (body: Record<string, unknown>) =>
+   914→      req<LandingPage>('/api/landing-pages', { method: 'POST', body }),
+   915→    patchLandingPage: (id: number, body: Record<string, unknown>) =>
+   916→      req<LandingPage>(`/api/landing-pages/${id}`, { method: 'PATCH', body }),
+   917→    publishLandingPage: (id: number) =>
+   918→      req<LandingPage>(`/api/landing-pages/${id}/publish`, { method: 'POST', body: {} }),
+   919→    unpublishLandingPage: (id: number) =>
+   920→      req<LandingPage>(`/api/landing-pages/${id}/unpublish`, { method: 'POST', body: {} }),
+   921→    deleteLandingPage: (id: number) =>
+   922→      req<void>(`/api/landing-pages/${id}`, { method: 'DELETE' }),
+   923→
+   924→    // ---- public storefront (§14, no auth) ----
+   925→    publicStore: () => req<PublicStore | null>('/api/public/store'),
+   926→    publicHome: () => req<PublicHome>('/api/public/home'),
+   927→    publicProducts: () => req<PublicProduct[]>('/api/public/products'),
+   928→    publicProduct: (slug: string) => req<PublicProductDetail>(`/api/public/products/${slug}`),
+   929→    publicPage: (slug: string) => req<PublicPage>(`/api/public/pages/${slug}`),
+   930→    submitOrderIntent: (body: { product_slug: string; contact_name: string; contact_phone: string; qty: number; note?: string; utm?: Record<string, string> }) =>
+   931→      req<{ ok: boolean; lead_id: number; message: string }>('/api/public/leads', { method: 'POST', body }),
+   932→
+   933→    // ---- §14 checkout (public, no auth) ----
+   934→    checkoutQuote: (body: { items: { product_slug: string; qty: number }[]; delivery_fee?: number }) =>
+   935→      req<CheckoutQuote>('/api/public/checkout/quote', { method: 'POST', body }),
+   936→    checkout: (body: {
+   937→      items: { product_slug: string; qty: number }[]
+   938→      full_name: string
+   939→      contact_phone: string
+   940→      address: string
+   941→      city: string
+   942→      state: string
+   943→      payment_method: 'cod' | 'online_transfer'
+   944→      note?: string
+   945→      utm?: Record<string, string>
+   946→    }) => req<CheckoutResult>('/api/public/checkout', { method: 'POST', body }),
+   947→    publicOrderStatus: (orderId: number, phone: string) =>
+   948→      req<PublicOrderStatus>(`/api/public/orders/${orderId}`, { params: { phone } }),
+   949→  }
+   950→}
+   951→

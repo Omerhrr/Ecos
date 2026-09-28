@@ -274,6 +274,405 @@ def _apply_lead(db: Session, operator, output: dict, actor: dict) -> dict[str, A
 
 
 # --------------------------------------------------------------------------
+# 5. Product research — "Market Scout" (§32, advisory)
+# --------------------------------------------------------------------------
+
+def _gather_research(db: Session, params: dict) -> dict[str, Any]:
+    sales = _sales_snapshot(db)
+    products = db.query(cm.Product).filter(cm.Product.status == "active").all()
+    rows = []
+    categories: dict[str, dict] = {}
+    for p in products:
+        s = sales.get(p.id, {"units": 0, "revenue": 0.0})
+        b = price_product(p.supplier_cost, p.currency, p.weight_kg, p.markup_pct)
+        velocity = round(s["units"] / 4.0, 2)
+        supplier = db.get(sm.Supplier, p.supplier_id)
+        rows.append({
+            "product_id": p.id, "title": p.title, "category": p.category,
+            "units_sold_4w": s["units"], "revenue_ngn": s["revenue"],
+            "weekly_velocity": velocity, "stock": p.stock,
+            "price_ngn": b.ecos_price_ngn,
+            "margin_per_unit_ngn": round(b.operator_margin_ngn, 2),
+            "supplier_rating": supplier.rating if supplier else None,
+        })
+        cat = categories.setdefault(p.category, {"products": 0, "units": 0, "revenue_ngn": 0.0})
+        cat["products"] += 1
+        cat["units"] += s["units"]
+        cat["revenue_ngn"] = round(cat["revenue_ngn"] + s["revenue"], 2)
+    rows.sort(key=lambda r: (-r["weekly_velocity"], -r["margin_per_unit_ngn"]))
+    return {"products": rows, "category_summary": categories}
+
+
+def _heuristic_research(gathered: dict[str, Any]) -> dict[str, Any]:
+    prods = gathered["products"]
+    winners = [
+        {"product_id": p["product_id"], "title": p["title"], "signal": "proven_demand_thin_stock",
+         "action": "scale ad spend + reorder now",
+         "rationale": f"{p['units_sold_4w']} units in 4w with only {p['stock']} left — demand outruns supply."}
+        for p in prods if p["weekly_velocity"] >= 2 and p["stock"] < 25
+    ]
+    sleepers = [
+        {"product_id": p["product_id"], "title": p["title"], "signal": "healthy_margin_no_traction",
+         "action": "test a dedicated landing page + 5-7 day promo",
+         "rationale": f"Margin ₦{p['margin_per_unit_ngn']:,.0f}/unit but {p['units_sold_4w']} sales — the offer needs traffic, not price."}
+        for p in prods if p["weekly_velocity"] < 2 and p["margin_per_unit_ngn"] >= 2000 and p["stock"] > 30
+    ]
+    cats = gathered["category_summary"]
+    deep = sorted(cats.items(), key=lambda kv: -kv[1]["revenue_ngn"])[:2]
+    gaps = [
+        {"category": name, "signal": "revenue_concentration",
+         "action": f"Source 2-3 more {name.replace('-', ' ')} SKUs from the supplier network",
+         "rationale": f"{data['products']} SKU(s) already drive ₦{data['revenue_ngn']:,.0f} — widen the assortment while it's hot."}
+        for name, data in deep
+    ]
+    return {
+        "opportunities": {"scale_now": winners, "revive": sleepers, "category_gaps": gaps},
+        "summary": (
+            f"{len(winners)} scale-now, {len(sleepers)} revive, {len(gaps)} category gap(s) "
+            f"across {len(prods)} active SKUs."
+        ),
+        "rationale": "Ranked by 4-week velocity, unit margin and stock cover.",
+    }
+
+
+# --------------------------------------------------------------------------
+# 6. Product import — "Catalog Forger" (§33, apply -> draft product)
+# --------------------------------------------------------------------------
+
+def _unique_product_slug(db: Session, base: str) -> str:
+    base = re.sub(r"[^a-z0-9-]+", "-", base.lower()).strip("-") or "imported-product"
+    slug, n = base, 2
+    while db.query(cm.Product).filter(cm.Product.slug == slug).count():
+        slug = f"{base}-{n}"
+        n += 1
+    return slug
+
+
+def _to_num_or(v: Any, default: float) -> float:
+    try:
+        return float(re.sub(r"[^0-9.]", "", str(v)) or default)
+    except ValueError:
+        return default
+
+
+def _parse_listing(text: str) -> dict[str, Any]:
+    """Parse a raw supplier listing: 'Title | 95 CNY | 0.25kg | electronics | k=v; k=v'."""
+    lines = [ln.strip() for ln in text.strip().splitlines() if ln.strip()]
+    parts = re.split(r"\s*\|\s*", lines[0]) if lines else []
+    title = (parts[0] if parts else "Untitled import").strip()[:255]
+    cost = _to_num_or(parts[1] if len(parts) > 1 else 0, 0.0)
+    currency = "CNY"
+    for token in parts[1:]:
+        up = token.upper()
+        if "USD" in up or "$" in up:
+            currency = "USD"
+        elif "CNY" in up or "¥" in up or "RMB" in up:
+            currency = "CNY"
+    weight = next((_to_num_or(t, 0.5) for t in parts if "kg" in t.lower()), 0.5)
+    category = "general"
+    if len(parts) > 3:
+        category = parts[3].strip().lower().replace(" ", "-") or "general"
+    specs: dict[str, str] = {}
+    specs_raw = next((t for t in parts if "=" in t and ";" in t), "")
+    if specs_raw:
+        for pair in specs_raw.split(";"):
+            if "=" in pair:
+                k, _, v = pair.partition("=")
+                specs[k.strip()] = v.strip()
+    return {"title": title, "cost": cost, "currency": currency,
+            "weight_kg": weight, "category": category, "specs": specs}
+
+
+def _gather_import(db: Session, params: dict) -> dict[str, Any]:
+    listing = str(params.get("listing") or "").strip()
+    if not listing:
+        raise ValueError("params.listing is required — paste the raw supplier listing")
+    parsed = _parse_listing(listing)
+    supplier_id = int(params.get("supplier_id") or 0) or None
+    supplier = db.get(sm.Supplier, supplier_id) if supplier_id else (
+        db.query(sm.Supplier).filter(sm.Supplier.status == "verified")
+        .order_by(sm.Supplier.rating.desc()).first()
+    )
+    breakdown = price_product(parsed["cost"], parsed["currency"], parsed["weight_kg"], None)
+    slug = re.sub(r"[^a-z0-9-]+", "-", parsed["title"].lower()).strip("-")
+    collision = db.query(cm.Product).filter(cm.Product.slug == slug).count() > 0
+    return {
+        "draft": {
+            "title": parsed["title"], "slug": slug, "slug_collision": collision,
+            "category": parsed["category"], "cost": parsed["cost"],
+            "currency": parsed["currency"], "weight_kg": parsed["weight_kg"],
+            "specs": parsed["specs"],
+        },
+        "supplier": {"id": supplier.id, "name": supplier.name, "rating": supplier.rating,
+                     "lead_time_days": supplier.lead_time_days} if supplier else None,
+        "proposed_price": {
+            "ecos_price_ngn": breakdown.ecos_price_ngn,
+            "waterfall": breakdown.components,
+        },
+    }
+
+
+def _heuristic_import(gathered: dict[str, Any]) -> dict[str, Any]:
+    d, price = gathered["draft"], gathered["proposed_price"]
+    supplier = gathered.get("supplier")
+    desc = (
+        f"{d['title']} — imported via the China-Nigeria corridor"
+        + (f" and quality-checked with {supplier['name']}." if supplier else ".")
+        + " Delivered to your door with tracking; pay cash on delivery."
+    )
+    return {
+        "draft_listing": {
+            "title": d["title"], "slug": d["slug"], "category": d["category"],
+            "description": desc, "specs": d["specs"],
+            "supplier_cost": d["cost"], "currency": d["currency"],
+            "weight_kg": d["weight_kg"],
+        },
+        "proposed_price_ngn": price["ecos_price_ngn"],
+        "supplier_id": supplier["id"] if supplier else None,
+        "checks": [
+            "Priced through the full §12 waterfall (cost -> FX -> logistics -> fees -> margins)",
+            "Created as DRAFT — a human reviews and activates it in Catalog (§9 supplier isolation)",
+        ],
+        "summary": f"Ready to file '{d['title']}' at ₦{price['ecos_price_ngn']:,.0f} (draft, pending review).",
+    }
+
+
+def _apply_import(db: Session, operator, output: dict, actor: dict) -> dict[str, Any]:
+    draft = output.get("draft_listing") or {}
+    title = draft.get("title") or "Untitled import"
+    slug = _unique_product_slug(db, draft.get("slug") or title)
+    product = cm.Product(
+        supplier_id=int(output.get("supplier_id") or 0) or None,
+        slug=slug, title=title,
+        description=(draft.get("description") or "")[:4096],
+        category=draft.get("category") or "general",
+        currency=draft.get("currency") or "CNY",
+        supplier_cost=float(draft.get("supplier_cost") or 0.0),
+        weight_kg=float(draft.get("weight_kg") or 0.5),
+        status="draft", stock=0,
+        specs=draft.get("specs") or {},
+        images=[f"https://picsum.photos/seed/{slug}/800/600"],
+    )
+    db.add(product)
+    db.flush()
+    return {"product_id": product.id, "slug": product.slug,
+            "status": "draft (review + activate in Catalog)"}
+
+
+# --------------------------------------------------------------------------
+# 7. Growth operator — "Growth Pilot" (§36, advisory)
+# --------------------------------------------------------------------------
+
+def _gather_growth(db: Session, params: dict) -> dict[str, Any]:
+    from app.marketing import service as attribution
+
+    return {"report": attribution.campaign_report(db)}
+
+
+def _heuristic_growth(gathered: dict[str, Any]) -> dict[str, Any]:
+    report = gathered["report"]
+    rows = [c for c in report["campaigns"] if c["status"] == "active"]
+    with_orders = [c for c in rows if c["orders"] and c["cpa_ngn"]]
+    best = min(with_orders, key=lambda c: c["cpa_ngn"]) if with_orders else None
+    worst = max(with_orders, key=lambda c: c["cpa_ngn"]) if with_orders else None
+    dead = [c for c in rows if not c["leads"]]
+
+    moves: list[dict[str, Any]] = []
+    if best:
+        moves.append({"campaign": best["name"], "move": "scale",
+                      "detail": f"Best CPA (₦{best['cpa_ngn']:,.0f}) with {best['orders']} attributed orders — raise budget 20-30% and keep the winning creative."})
+    if worst and best and worst["id"] != best["id"]:
+        moves.append({"campaign": worst["name"], "move": "fix_or_pause",
+                      "detail": f"CPA ₦{worst['cpa_ngn']:,.0f} vs best ₦{best['cpa_ngn']:,.0f} — refresh the audience/creative before adding spend."})
+    for c in dead:
+        moves.append({"campaign": c["name"], "move": "investigate",
+                      "detail": "Zero attributed leads — check UTM wiring on the landing page and the agent intake path."})
+    top_src = (report["by_source"] or [{}])[0]
+    return {
+        "budget_moves": moves,
+        "channel_insight": (
+            f"{top_src.get('source', 'n/a')} leads convert best "
+            f"({top_src.get('converted_leads', 0)}/{top_src.get('leads', 0)}) — replicate its messaging on paid channels."
+            if top_src else "No source data yet."
+        ),
+        "totals": report["totals"],
+        "summary": f"{len(moves)} budget move(s) proposed across {len(rows)} active campaign(s).",
+        "rationale": "CPA from campaign spend vs attributed orders; zero-lead campaigns investigated first.",
+    }
+
+
+# --------------------------------------------------------------------------
+# 8. Logistics operator — "Route Guard" (§37, apply -> escalations)
+# --------------------------------------------------------------------------
+
+def _now_utc():
+    """Naive UTC (SQLite stores naive datetimes — keep comparisons consistent)."""
+    from datetime import datetime as _dt, timezone as _tz
+    return _dt.now(_tz.utc).replace(tzinfo=None)
+
+
+def _gather_logistics_ops(db: Session, params: dict) -> dict[str, Any]:
+    from app.logistics import models as lm_
+
+    stall_hours = max(6, int(params.get("stall_hours") or 48))
+    now = _now_utc()
+    shipments = db.query(lm_.Shipment).order_by(lm_.Shipment.id.desc()).limit(200).all()
+    active_states = ("processing", "in_transit", "out_for_delivery")
+    rows, stalled = [], []
+    for s in shipments:
+        last = (
+            db.query(lm_.TrackingEvent)
+            .filter(lm_.TrackingEvent.shipment_id == s.id)
+            .order_by(lm_.TrackingEvent.occurred_at.desc(), lm_.TrackingEvent.id.desc())
+            .first()
+        )
+        age_h = None
+        if last and last.occurred_at:
+            age_h = round((now - last.occurred_at).total_seconds() / 3600, 1)
+        row = {"shipment_id": s.id, "order_id": s.order_id, "tracking_code": s.tracking_code,
+               "carrier": s.carrier, "status": s.status,
+               "last_checkpoint": last.code if last else None,
+               "hours_since_checkpoint": age_h}
+        rows.append(row)
+        if s.status in active_states and (age_h is None or age_h >= stall_hours):
+            stalled.append(row)
+    delivered_rows = [r for r in rows if r["status"] == "delivered"]
+    return {
+        "threshold_hours": stall_hours,
+        "totals": {"tracked": len(rows), "delivered": len(delivered_rows),
+                   "active": len(rows) - len(delivered_rows), "stalled": len(stalled)},
+        "stalled_shipments": stalled,
+    }
+
+
+def _heuristic_logistics_ops(gathered: dict[str, Any]) -> dict[str, Any]:
+    totals = gathered["totals"]
+    escalations = [
+        {"shipment_id": s["shipment_id"], "tracking_code": s["tracking_code"],
+         "action": "probe_carrier_and_notify_customer",
+         "detail": (
+             f"No checkpoint advance in {s['hours_since_checkpoint'] if s['hours_since_checkpoint'] is not None else 'unknown'}h "
+             f"(threshold {gathered['threshold_hours']}h). Last checkpoint: {s['last_checkpoint'] or 'none'}. "
+             "Ping the carrier lane, then message the customer with an honest ETA."
+         )}
+        for s in gathered["stalled_shipments"]
+    ]
+    return {
+        "escalations": escalations,
+        "totals": totals,
+        "summary": (
+            f"{totals['stalled']} of {totals['active']} active shipment(s) breached the "
+            f"{gathered['threshold_hours']}h checkpoint SLA; delivered {totals['delivered']}/{totals['tracked']}."
+        ),
+        "rationale": "Checkpoint freshness is the corridor's honest health signal — silence means trouble.",
+    }
+
+
+def _apply_logistics_ops(db: Session, operator, output: dict, actor: dict) -> dict[str, Any]:
+    from app.notifications import service as notif_service
+
+    raised = []
+    for esc in output.get("escalations", []):
+        rows = notif_service.notify(
+            db,
+            org_id=operator.org_id, category="shipments", level="warning",
+            title=f"Shipment {esc.get('tracking_code', esc.get('shipment_id'))} stalled",
+            body=str(esc.get("detail", ""))[:1024],
+            entity_type="shipment", entity_id=int(esc.get("shipment_id") or 0) or None,
+            meta={"operator": operator.code},
+        )
+        raised.append({"shipment_id": esc.get("shipment_id"), "notifications": len(rows)})
+    return {"escalations_raised": raised}
+
+
+# --------------------------------------------------------------------------
+# 9. Business analyst — "P&L Analyst" (§38, advisory)
+# --------------------------------------------------------------------------
+
+def _gather_analyst(db: Session, params: dict) -> dict[str, Any]:
+    from app.finance import models as fm
+    from app.returns import models as rm
+    from app.settlements import service as settlement_service
+
+    by_type = dict(
+        db.query(fm.LedgerEntry.entry_type, sa_func.sum(fm.LedgerEntry.amount))
+        .group_by(fm.LedgerEntry.entry_type).all()
+    )
+    by_type = {k: round(float(v or 0.0), 2) for k, v in by_type.items()}
+    total_orders = db.query(sa_func.count(om.Order.id)).scalar() or 0
+    delivered = db.query(sa_func.count(om.Order.id)).filter(om.Order.status == "delivered").scalar() or 0
+    problem = (
+        db.query(sa_func.count(om.Order.id))
+        .filter(om.Order.status.in_(["cancelled", "failed", "returned", "refunded"]))
+        .scalar() or 0
+    )
+    rmas = db.query(sa_func.count(rm.ReturnOrder.id)).scalar() or 0
+    units_sold = db.query(sa_func.coalesce(sa_func.sum(om.OrderItem.qty), 0)).scalar() or 0
+    try:
+        unsettled = settlement_service.unsettled_summary(db)
+    except Exception:  # noqa: BLE001 — analytics must not depend on settlement state
+        unsettled = {"total_amount": 0.0, "entry_count": 0}
+    return {
+        "ledger_totals_by_type": by_type,
+        "orders": {"total": total_orders, "delivered": delivered, "problem": problem},
+        "returns": {"rma_count": rmas, "units_sold": int(units_sold)},
+        "unsettled_obligations": {"amount": unsettled.get("total_amount", 0.0),
+                                  "entries": unsettled.get("entry_count", 0)},
+    }
+
+
+def _heuristic_analyst(gathered: dict[str, Any]) -> dict[str, Any]:
+    led = gathered["ledger_totals_by_type"]
+    revenue = led.get("customer_payment", 0.0)
+    refunds = led.get("refund", 0.0)
+    supplier = abs(led.get("supplier_payable", 0.0))
+    logistics = abs(led.get("logistics_cost", 0.0))
+    paycost = abs(led.get("payment_cost", 0.0))
+    luxeen = abs(led.get("luxeen_economics", 0.0))
+    operator = led.get("operator_economics", 0.0)
+    net = revenue + refunds  # refunds arrive pre-signed (negative)
+    contribution = net - supplier - logistics - paycost - luxeen
+
+    orders = gathered["orders"]
+    delivery_rate = round(orders["delivered"] / orders["total"], 3) if orders["total"] else 0.0
+    rma = gathered["returns"]
+    return_rate = round(rma["rma_count"] / orders["total"], 3) if orders["total"] else 0.0
+    unsettled = gathered["unsettled_obligations"]
+
+    risks: list[str] = []
+    if delivery_rate < 0.5 and orders["total"] >= 5:
+        risks.append(f"Delivery rate is {delivery_rate:.0%} — cash is stuck in the pipeline; chase the in-flight orders.")
+    if return_rate > 0.15:
+        risks.append(f"Return rate {return_rate:.0%} is above the 15% comfort line — inspect the top-returned SKUs.")
+    if unsettled["amount"] > 0:
+        risks.append(f"₦{unsettled['amount']:,.0f} across {unsettled['entries']} ledger entries is still unsettled — counterparties are waiting.")
+    if not risks:
+        risks.append("No red flags: pipeline, returns and settlements all look healthy this period.")
+
+    highlights = [
+        f"Gross collections ₦{revenue:,.0f}; net after refunds ₦{net:,.0f}.",
+        f"Contribution after supplier/logistics/fees/Luxeen: ₦{contribution:,.0f} "
+        f"({(contribution / net * 100 if net else 0):.1f}% of net).",
+        f"Operator economics so far: ₦{operator:,.0f}.",
+    ]
+    return {
+        "highlights": highlights,
+        "risks": risks,
+        "recommendations": [
+            "Reconcile the settlement queue weekly — stale payables erode supplier trust and lane priority.",
+            "Watch the stockout-risk SKUs; a stockout on a proven mover costs more than a PO.",
+            "Keep COD confirmations fast: every hour between order and confirmation raises the cancel rate.",
+        ],
+        "metrics": {
+            "net_revenue_ngn": round(net, 2), "contribution_ngn": round(contribution, 2),
+            "delivery_rate": delivery_rate, "return_rate": return_rate,
+            "unsettled_ngn": unsettled["amount"],
+        },
+        "summary": f"Net ₦{net:,.0f}, contribution ₦{contribution:,.0f}, {len(risks)} risk note(s).",
+    }
+
+
+# --------------------------------------------------------------------------
 # Registry
 # --------------------------------------------------------------------------
 
@@ -339,6 +738,94 @@ BLUEPRINTS: dict[str, dict[str, Any]] = {
             "You are Lead Whisperer, a sales assistant for COD e-commerce. Draft a short "
             "follow-up reply for the given lead. Respond ONLY with JSON: "
             "{\"draft_reply\": str, \"next_action\": str, \"tone\": str}"
+        ),
+    },
+    "product_research": {
+        "code": "product_research",
+        "name": "Market Scout",
+        "role_description": "Researches the catalog for scale-now winners, dormant sleepers and category gaps (§32). Advisory only.",
+        "advisory": True,
+        "input_fields": [],
+        "gather": _gather_research,
+        "heuristic": _heuristic_research,
+        "apply": None,
+        "task_brief": (
+            "You are Market Scout, a product research analyst for a China->Nigeria corridor. "
+            "Using the velocity/margin snapshot, surface scale-now winners, sleepers worth "
+            "reviving, and category gaps worth sourcing. Respond ONLY with JSON: "
+            "{\"opportunities\": {\"scale_now\": [...], \"revive\": [...], \"category_gaps\": [...]}, "
+            "\"summary\": str, \"rationale\": str}"
+        ),
+    },
+    "product_import": {
+        "code": "product_import",
+        "name": "Catalog Forger",
+        "role_description": "Parses a raw supplier listing into a structured draft product priced by the waterfall; approval files it in Catalog (§33).",
+        "advisory": False,
+        "input_fields": [
+            {"key": "listing", "label": "Raw supplier listing", "type": "text", "required": True,
+             "placeholder": "Mini Projector HD | 210 CNY | 1.4kg | electronics | warranty=6 months; resolution=1080p"},
+            {"key": "supplier_id", "label": "Supplier (optional — defaults to best-rated)", "type": "number", "required": False},
+        ],
+        "gather": _gather_import,
+        "heuristic": _heuristic_import,
+        "apply": _apply_import,
+        "task_brief": (
+            "You are Catalog Forger, a catalog operations specialist. Turn the parsed supplier "
+            "listing into a clean draft listing with a customer-facing description. Respond ONLY "
+            "with JSON: {\"draft_listing\": {\"title\": str, \"slug\": str, \"category\": str, "
+            "\"description\": str, \"specs\": {...}, \"supplier_cost\": number, \"currency\": str, "
+            "\"weight_kg\": number}, \"proposed_price_ngn\": number, \"supplier_id\": int, "
+            "\"checks\": [str], \"summary\": str}"
+        ),
+    },
+    "growth_operator": {
+        "code": "growth_operator",
+        "name": "Growth Pilot",
+        "role_description": "Reads the attribution report and proposes concrete budget moves per campaign/channel (§36). Advisory only.",
+        "advisory": True,
+        "input_fields": [],
+        "gather": _gather_growth,
+        "heuristic": _heuristic_growth,
+        "apply": None,
+        "task_brief": (
+            "You are Growth Pilot, a growth marketer for COD e-commerce. Using the attribution "
+            "report, propose budget moves (scale / fix_or_pause / investigate) and one channel "
+            "insight. Respond ONLY with JSON: {\"budget_moves\": [{\"campaign\": str, \"move\": str, "
+            "\"detail\": str}], \"channel_insight\": str, \"totals\": {...}, \"summary\": str, "
+            "\"rationale\": str}"
+        ),
+    },
+    "logistics_operator": {
+        "code": "logistics_operator",
+        "name": "Route Guard",
+        "role_description": "Watches shipment checkpoint freshness and escalates stalled lanes; approval raises ops notifications (§37).",
+        "advisory": False,
+        "input_fields": [{"key": "stall_hours", "label": "Stall threshold (hours)", "type": "number", "required": False}],
+        "gather": _gather_logistics_ops,
+        "heuristic": _heuristic_logistics_ops,
+        "apply": _apply_logistics_ops,
+        "task_brief": (
+            "You are Route Guard, a logistics escalation manager. Using shipment checkpoint data, "
+            "flag shipments that breached the stall threshold and propose next actions. Respond "
+            "ONLY with JSON: {\"escalations\": [{\"shipment_id\": int, \"tracking_code\": str, "
+            "\"action\": str, \"detail\": str}], \"totals\": {...}, \"summary\": str, \"rationale\": str}"
+        ),
+    },
+    "business_analyst": {
+        "code": "business_analyst",
+        "name": "P&L Analyst",
+        "role_description": "Compiles a ledger-grounded P&L digest with highlights, risks and recommendations (§38). Advisory only.",
+        "advisory": True,
+        "input_fields": [],
+        "gather": _gather_analyst,
+        "heuristic": _heuristic_analyst,
+        "apply": None,
+        "task_brief": (
+            "You are the Business Analyst for a cross-border e-commerce corridor. Using the ledger "
+            "totals and order stats, produce a digest: highlights, risks, recommendations, metrics. "
+            "Respond ONLY with JSON: {\"highlights\": [str], \"risks\": [str], \"recommendations\": [str], "
+            "\"metrics\": {...}, \"summary\": str}"
         ),
     },
 }

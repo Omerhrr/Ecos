@@ -41,8 +41,10 @@ onMounted(async () => {
         <NuxtLink to="/warehouse">Warehouse · Fulfillment</NuxtLink>
         <NuxtLink to="/settlements">Settlements</NuxtLink>
         <NuxtLink to="/finance">Finance · Ledger</NuxtLink>
+        <NuxtLink to="/analytics">Analytics</NuxtLink>
         <NuxtLink to="/marketing">Marketing · Attribution</NuxtLink>
         <NuxtLink to="/ai-harness">AI Harness</NuxtLink>
+        <NuxtLink to="/automation">Automation · Rules</NuxtLink>
         <NuxtLink to="/landing-pages">Landing Pages</NuxtLink>
         <NuxtLink to="/notifications" class="notif-link">
           <span>Notifications</span>

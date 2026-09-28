@@ -13,6 +13,7 @@ export default defineNuxtRouteMiddleware((to) => {
     || path === '/login'
     || path === '/cart'
     || path === '/track'
+    || path === '/pricing'
     || path.startsWith('/lp')
     || path.startsWith('/products')
 

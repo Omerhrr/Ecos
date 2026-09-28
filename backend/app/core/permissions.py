@@ -32,6 +32,7 @@ READ_PERMISSIONS = [
     "procurement:read",
     "warehouse:read",
     "analytics:read",
+    "automation:read",
 ]
 
 ALL_PERMISSIONS = READ_PERMISSIONS + [
@@ -51,12 +52,15 @@ ALL_PERMISSIONS = READ_PERMISSIONS + [
     "procurement:write",
     "warehouse:write",
     "identity:manage",
+    "automation:write",
+    "finance:write",
 ]
 
 _ROLE_OPS_WRITE = [
     "catalog:write", "orders:write", "logistics:write",
     "crm:write", "storefront:write", "landing_pages:write",
     "marketing:write", "returns:write", "warehouse:write",
+    "automation:write", "finance:write",
 ]
 
 ROLE_PERMISSIONS: dict[str, list[str]] = {

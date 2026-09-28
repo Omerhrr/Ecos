@@ -4,8 +4,9 @@ DeepSeek is the configured harness brain (§31): an OpenAI-compatible
 chat-completions API at api.deepseek.com. When DEEPSEEK_API_KEY is not
 configured, the harness degrades gracefully to a deterministic heuristic
 engine so every operator still produces structured, auditable output —
-clearly labelled `heuristic-fallback` in run records. Set the env var and
-restart to switch the harness to live DeepSeek inference; no code changes.
+clearly labelled `heuristic-fallback` in run records. Set the env var
+(backend reads the project-root .env) and restart to switch the harness
+to live DeepSeek inference; no code changes.
 
 Contract used by operators:
     chat(messages, *, json_mode=False) -> {
@@ -24,26 +25,66 @@ from typing import Any
 
 import httpx
 
-DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
+DEFAULT_BASE_URL = "https://api.deepseek.com"
+DEFAULT_MODEL = "deepseek-chat"
 REQUEST_TIMEOUT_S = 60.0
+MAX_ATTEMPTS = 2  # one retry on transient transport failures
+
+
+def _api_key() -> str:
+    """Read at call time so a .env edit + restart (or live reload) is honoured."""
+    return (os.getenv("DEEPSEEK_API_KEY") or "").strip()
+
+
+def _base_url() -> str:
+    return (os.getenv("DEEPSEEK_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
+
+
+def _model() -> str:
+    return os.getenv("DEEPSEEK_MODEL") or DEFAULT_MODEL
 
 
 def provider_info() -> dict[str, Any]:
-    configured = bool(DEEPSEEK_API_KEY)
+    configured = bool(_api_key())
     return {
         "provider": "deepseek" if configured else "heuristic-fallback",
-        "model": DEEPSEEK_MODEL if configured else "ecos-heuristic-v1",
+        "model": _model() if configured else "ecos-heuristic-v1",
         "key_configured": configured,
-        "base_url": DEEPSEEK_BASE_URL if configured else None,
+        "base_url": _base_url() if configured else None,
+        "live_instructions": (
+            "Add DEEPSEEK_API_KEY=<key> to the project-root .env and restart the API — "
+            "every operator flips to live inference with zero code changes."
+        ) if not configured else None,
     }
 
 
 def chat(messages: list[dict[str, str]], *, json_mode: bool = False) -> dict[str, Any]:
-    if DEEPSEEK_API_KEY:
+    if _api_key():
         return _chat_deepseek(messages, json_mode=json_mode)
     return _chat_fallback(messages, json_mode=json_mode)
+
+
+def test_connection() -> dict[str, Any]:
+    """Tiny live ping used by POST /ai/provider/test. Raises on failure."""
+    if not _api_key():
+        raise RuntimeError(
+            "DEEPSEEK_API_KEY is not configured — the harness is running on the "
+            "deterministic heuristic fallback. Add the key to the project-root .env "
+            "and restart the API."
+        )
+    started = time.monotonic()
+    result = _chat_deepseek(
+        [{"role": "user", "content": "Reply with the single word: pong"}],
+        json_mode=False,
+    )
+    return {
+        "ok": True,
+        "provider": "deepseek",
+        "model": result["model"],
+        "latency_ms": result["latency_ms"],
+        "reply": result["content"][:80],
+        "total_ms": int((time.monotonic() - started) * 1000),
+    }
 
 
 # --------------------------------------------------------------------------
@@ -51,34 +92,51 @@ def chat(messages: list[dict[str, str]], *, json_mode: bool = False) -> dict[str
 # --------------------------------------------------------------------------
 
 def _chat_deepseek(messages: list[dict[str, str]], *, json_mode: bool) -> dict[str, Any]:
-    started = time.monotonic()
     body: dict[str, Any] = {
-        "model": DEEPSEEK_MODEL,
+        "model": _model(),
         "messages": messages,
         "temperature": 0.3,
     }
     if json_mode:
         body["response_format"] = {"type": "json_object"}
-    resp = httpx.post(
-        f"{DEEPSEEK_BASE_URL}/chat/completions",
-        headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"},
-        json=body,
-        timeout=REQUEST_TIMEOUT_S,
-    )
-    latency_ms = int((time.monotonic() - started) * 1000)
-    if resp.status_code != 200:
-        raise RuntimeError(f"DeepSeek API error {resp.status_code}: {resp.text[:300]}")
-    data = resp.json()
-    choice = data["choices"][0]["message"]["content"]
-    usage = data.get("usage", {})
-    return {
-        "content": choice,
-        "provider": "deepseek",
-        "model": data.get("model", DEEPSEEK_MODEL),
-        "prompt_tokens": usage.get("prompt_tokens", 0),
-        "completion_tokens": usage.get("completion_tokens", 0),
-        "latency_ms": latency_ms,
-    }
+
+    last_error: Exception | None = None
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        started = time.monotonic()
+        try:
+            resp = httpx.post(
+                f"{_base_url()}/chat/completions",
+                headers={"Authorization": f"Bearer {_api_key()}"},
+                json=body,
+                timeout=REQUEST_TIMEOUT_S,
+            )
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            last_error = exc
+            if attempt < MAX_ATTEMPTS:
+                time.sleep(1.0 * attempt)
+                continue
+            raise RuntimeError(f"DeepSeek unreachable after {attempt} attempt(s): {exc}") from exc
+
+        latency_ms = int((time.monotonic() - started) * 1000)
+        if resp.status_code == 200:
+            data = resp.json()
+            choice = data["choices"][0]["message"]["content"]
+            usage = data.get("usage", {})
+            return {
+                "content": choice,
+                "provider": "deepseek",
+                "model": data.get("model", _model()),
+                "prompt_tokens": usage.get("prompt_tokens", 0),
+                "completion_tokens": usage.get("completion_tokens", 0),
+                "latency_ms": latency_ms,
+            }
+        # 4xx are permanent — retrying won't help; 5xx may be transient
+        if resp.status_code < 500 or attempt == MAX_ATTEMPTS:
+            raise RuntimeError(f"DeepSeek API error {resp.status_code}: {resp.text[:300]}")
+        last_error = RuntimeError(f"DeepSeek {resp.status_code}")
+        time.sleep(1.0 * attempt)
+
+    raise RuntimeError(f"DeepSeek call failed: {last_error}")
 
 
 # --------------------------------------------------------------------------

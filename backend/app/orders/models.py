@@ -43,6 +43,10 @@ class Order(Base):
     payment_method: Mapped[str] = mapped_column(String(30), default="cod")
     payment_status: Mapped[str] = mapped_column(String(30), default="pending")  # pending | paid | refunded | failed
     currency: Mapped[str] = mapped_column(String(3), default="NGN")
+    # §46: the customer-facing display currency + FX snapshot at checkout.
+    # Ledger/settlement money stays in `currency` (NGN on the first corridor).
+    display_currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    fx_rate_used: Mapped[float | None] = mapped_column(Float, nullable=True)
     items_total: Mapped[float] = mapped_column(Float, default=0.0)
     delivery_fee: Mapped[float] = mapped_column(Float, default=0.0)
     total: Mapped[float] = mapped_column(Float, default=0.0)

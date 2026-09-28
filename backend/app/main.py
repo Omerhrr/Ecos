@@ -34,6 +34,7 @@ from app.ai_harness import models as ai_models  # noqa: F401,E402
 from app.notifications import models as notifications_models  # noqa: F401,E402
 from app.procurement import models as procurement_models  # noqa: F401,E402
 from app.warehouse import models as warehouse_models  # noqa: F401,E402
+from app.automation import models as automation_models  # noqa: F401,E402
 
 from app.core.seed import seed_if_empty  # noqa: E402
 from app.core.deps import require_auth  # noqa: E402
@@ -58,6 +59,7 @@ from app.notifications.router import router as notifications_router  # noqa: E40
 from app.procurement.router import router as procurement_router  # noqa: E402
 from app.warehouse.router import router as warehouse_router  # noqa: E402
 from app.analytics.router import router as analytics_router  # noqa: E402
+from app.automation.router import router as automation_router  # noqa: E402
 from app.core.models import DomainEvent  # noqa: E402
 
 
@@ -91,6 +93,22 @@ async def lifespan(app: FastAPI):
     _run_migrations()
     with SessionLocal() as db:
         seed_if_empty(db)
+
+        # §46: make sure the corridor rate table exists on every boot
+        from app.finance import fx as fx_service
+
+        fx_service.seed_rates(db)
+        db.commit()
+
+        # §31-38: orgs that already adopted the harness gain newly built
+        # operators automatically (no manual deploy per release)
+        from app.ai_harness import service as ai_service
+
+        created = ai_service.ensure_operators_deployed(db)
+        if created:
+            db.commit()
+            print(f"[harness] deployed {len(created)} new operator(s): "
+                  f"{[o.name for o in created]}")
 
     # §39 Phase 3 — background outbound worker: drains the notification
     # outbox (email / WhatsApp) every 30s, independent of request traffic.
@@ -139,7 +157,7 @@ for r in [
     public_router, crm_router, customers_router, orders_router, logistics_router,
     payments_router, finance_router, landing_pages_router, marketing_router,
     returns_router, settlements_router, ai_router, notifications_router,
-    procurement_router, warehouse_router, analytics_router,
+    procurement_router, warehouse_router, analytics_router, automation_router,
 ]:
     app.include_router(r, prefix="/api")
 

@@ -330,7 +330,9 @@ def seed_if_empty(db: Session) -> bool:
     from app.ai_harness import service as ai_service
 
     ai_ops = {}
-    for code in ("pricing_analyst", "demand_forecaster", "copywriter", "lead_responder"):
+    for code in ("pricing_analyst", "demand_forecaster", "copywriter", "lead_responder",
+                 "product_research", "product_import", "growth_operator",
+                 "logistics_operator", "business_analyst"):
         ai_ops[code] = ai_service.deploy_operator(
             db, code=code, org_id=operator.id, actor={"user_id": owner.id},
         )
@@ -339,6 +341,14 @@ def seed_if_empty(db: Session) -> bool:
         actor={"user_id": owner.id},
     )
     # -> ai.run.completed now materialises §33 reorder suggestions automatically
+
+    # --- Automation Engine (§41): the three starter WHEN/AND/THEN rules ---
+    from app.automation import models as autom
+    from app.automation.service import STARTER_RULES
+
+    for spec in STARTER_RULES:
+        db.add(autom.AutomationRule(org_id=operator.id, enabled=1, created_by=owner.id, **spec))
+    db.flush()
 
     # --- Procurement (§21/§22): one submitted restock PO; the Stock Prophet
     # suggestions stay open so the Procurement page has work to act on ---

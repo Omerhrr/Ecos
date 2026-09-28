@@ -385,6 +385,7 @@ export interface AiInputField {
   label: string
   type: string
   required: boolean
+  placeholder?: string
 }
 
 export interface AiBlueprint {
@@ -553,6 +554,145 @@ export interface PublicPage {
   blocks: LandingPageBlock[]
   theme: { primary?: string }
   seo: Record<string, string>
+}
+
+/* ---------------- §46 multi-currency ---------------- */
+
+export interface FxRateRow {
+  base: string
+  quote: string
+  rate: number
+  source: string
+  updated_by: number | null
+  updated_at: string | null
+}
+
+export interface FxMoney {
+  amount: number
+  rate: number
+  source: string
+}
+
+export interface PublicPricing {
+  base_currency: string
+  display_currencies: string[]
+  usd: { rate: number; source: string }
+  products: (PublicProduct & { price_display?: FxMoney })[]
+}
+
+/* ---------------- §41 automation engine ---------------- */
+
+export interface AutomationCondition {
+  path: string
+  op: string
+  value?: unknown
+  actual?: unknown
+  ok?: boolean
+}
+
+export interface AutomationAction {
+  type: string
+  title?: string
+  body?: string
+  level?: string
+  category?: string
+  reason?: string
+  product_id?: number | null
+  product_path?: string
+  notifications?: number
+  run_number?: string
+  skipped?: boolean
+  dry_run?: boolean
+}
+
+export interface AutomationRule {
+  id: number
+  org_id: number | null
+  name: string
+  description: string
+  event_type: string
+  enabled: boolean
+  conditions: AutomationCondition[]
+  actions: AutomationAction[]
+  cooldown_seconds: number
+  match_count: number
+  last_matched_at: string | null
+  created_at: string | null
+}
+
+export interface AutomationRunRow {
+  id: number
+  rule_id: number
+  rule_name: string
+  event_type: string
+  status: 'matched' | 'condition_not_met' | 'cooldown' | 'dry_run' | 'failed'
+  conditions_result: AutomationCondition[]
+  actions_executed: AutomationAction[]
+  error: string
+  created_at: string | null
+}
+
+export interface AutomationEventDef {
+  name: string
+  label: string
+  sample: string
+}
+
+/* ---------------- §29 analytics suites ---------------- */
+
+export interface AnalyticsLogistics {
+  window_days: number
+  shipments_total: number
+  shipments_delivered: number
+  shipments_active: number
+  avg_transit_hours: number | null
+  stalled_over_48h: { shipment_id: number; order_id: number; tracking_code: string; last_checkpoint: string | null }[]
+  carriers: { carrier: string; shipments: number; delivered: number; active: number; delivered_share: number }[]
+  reverse_checkpoints: number
+  checkpoint_total: number
+}
+
+export interface AnalyticsFinancial {
+  window_days: number
+  ledger_totals_by_type: Record<string, number>
+  gross_revenue_ngn: number
+  refunds_ngn: number
+  net_revenue_ngn: number
+  supplier_cost_ngn: number
+  logistics_cost_ngn: number
+  payment_cost_ngn: number
+  luxeen_economics_ngn: number
+  operator_economics_ngn: number
+  contribution_ngn: number
+  contribution_margin_pct: number
+  cod_collected_ngn: number
+  cod_pending_ngn: number
+  payments_count: number
+  unsettled_obligations: { amount: number; entries: number; lines: { counterparty: string; amount: number; entry_count: number }[] }
+}
+
+export interface AnalyticsProductRow {
+  product_id: number
+  title: string
+  units_sold: number
+  revenue_ngn: number
+  supplier_cost_ngn: number
+  gross_margin_ngn: number
+  margin_per_unit_ngn: number
+  return_units: number
+  return_rate: number
+  stock_on_hand: number
+  weekly_velocity: number
+  weeks_of_cover: number | null
+  status: string | null
+}
+
+export interface AnalyticsProducts {
+  window_days: number
+  products: AnalyticsProductRow[]
+  catalog_total: number
+  catalog_active: number
+  never_sold_with_stock: { product_id: number; title: string; stock: number }[]
 }
 
 /* ---------------- §39 notifications + §39 Phase 3 outbox ---------------- */
@@ -727,7 +867,7 @@ export interface LoginResponse {
   permissions: string[]
 }
 
-const PUBLIC_PATHS = ['/', '/login', '/lp', '/products', '/cart']
+const PUBLIC_PATHS = ['/', '/login', '/lp', '/products', '/cart', '/track', '/pricing']
 
 function isPublicPath(path: string) {
   if (path === '/' || path === '/login' || path === '/cart') return true
@@ -770,6 +910,42 @@ export function useApi() {
     summary: () => req<Summary>('/api/analytics/summary'),
     funnel: () => req<Funnel>('/api/analytics/funnel'),
     topProducts: () => req<TopProduct[]>('/api/analytics/top-products'),
+
+    // ---- §29 analytics suites ----
+    analyticsLogistics: (days = 30) =>
+      req<AnalyticsLogistics>('/api/analytics/logistics', { params: { days } }),
+    analyticsFinancial: (days = 30) =>
+      req<AnalyticsFinancial>('/api/analytics/financial', { params: { days } }),
+    analyticsProducts: (days = 30) =>
+      req<AnalyticsProducts>('/api/analytics/products', { params: { days } }),
+
+    // ---- §41 automation engine ----
+    automationRules: () => req<AutomationRule[]>('/api/automation/rules'),
+    automationEvents: () => req<AutomationEventDef[]>('/api/automation/events'),
+    automationRuns: (params?: { rule_id?: number; status?: string; limit?: number }) =>
+      req<AutomationRunRow[]>('/api/automation/runs', { params }),
+    createAutomationRule: (body: {
+      name: string
+      description?: string
+      event_type: string
+      enabled?: boolean
+      conditions: { path: string; op: string; value?: unknown }[]
+      actions: { type: string; title?: string; body?: string; level?: string; category?: string; reason?: string }[]
+      cooldown_seconds?: number
+    }) => req<AutomationRule>('/api/automation/rules', { method: 'POST', body }),
+    patchAutomationRule: (id: number, body: Partial<Pick<AutomationRule, 'name' | 'description' | 'enabled' | 'conditions' | 'actions' | 'cooldown_seconds'>>) =>
+      req<AutomationRule>(`/api/automation/rules/${id}`, { method: 'PATCH', body }),
+    deleteAutomationRule: (id: number) =>
+      req<void>(`/api/automation/rules/${id}`, { method: 'DELETE' }),
+    testAutomationRule: (id: number, eventType: string, payload: Record<string, unknown>) =>
+      req<{ rule_id: number; results: AutomationRunRow[] }>(`/api/automation/rules/${id}/test`, { method: 'POST', body: { event_type: eventType, payload } }),
+    replayAutomationEvent: (event_type: string, payload: Record<string, unknown>) =>
+      req<{ event_type: string; results: AutomationRunRow[] }>('/api/automation/events/replay', { method: 'POST', body: { event_type, payload } }),
+
+    // ---- §46 multi-currency ----
+    fxRates: () => req<{ rates: FxRateRow[]; supported: string[] }>('/api/finance/fx'),
+    setFxRate: (body: { base: string; quote: string; rate: number }) =>
+      req<FxRateRow>('/api/finance/fx', { method: 'POST', body }),
 
     suppliers: () => req<Supplier[]>('/api/suppliers'),
     stores: () => req<Store[]>('/api/stores'),
@@ -815,6 +991,8 @@ export function useApi() {
 
     // ---- AI harness (§31+, DeepSeek) ----
     aiProvider: () => req<AiProviderInfo>('/api/ai/provider'),
+    aiProviderTest: () =>
+      req<{ ok: boolean; model: string; latency_ms: number; reply: string }>('/api/ai/provider/test', { method: 'POST', body: {} }),
     aiRegistry: () => req<AiBlueprint[]>('/api/ai/registry'),
     aiOperators: () => req<AiOperator[]>('/api/ai/operators'),
     deployAiOperator: (code: string) =>
@@ -923,9 +1101,11 @@ export function useApi() {
 
     // ---- public storefront (§14, no auth) ----
     publicStore: () => req<PublicStore | null>('/api/public/store'),
-    publicHome: () => req<PublicHome>('/api/public/home'),
-    publicProducts: () => req<PublicProduct[]>('/api/public/products'),
-    publicProduct: (slug: string) => req<PublicProductDetail>(`/api/public/products/${slug}`),
+    publicHome: (currency = 'NGN') => req<PublicHome>('/api/public/home', { params: { currency } }),
+    publicProducts: (currency = 'NGN') => req<PublicProduct[]>('/api/public/products', { params: { currency } }),
+    publicProduct: (slug: string, currency = 'NGN') => req<PublicProductDetail>(`/api/public/products/${slug}`, { params: { currency } }),
+    publicPricing: () => req<PublicPricing>('/api/public/pricing'),
+    publicFx: (quote = 'USD') => req<{ base: string; rate: number; source: string }>('/api/public/fx', { params: { quote } }),
     publicPage: (slug: string) => req<PublicPage>(`/api/public/pages/${slug}`),
     submitOrderIntent: (body: { product_slug: string; contact_name: string; contact_phone: string; qty: number; note?: string; utm?: Record<string, string> }) =>
       req<{ ok: boolean; lead_id: number; message: string }>('/api/public/leads', { method: 'POST', body }),

@@ -15,10 +15,15 @@ const loading = ref(true)
 const busyId = ref(0)
 
 const showRun = ref<AiOperator | null>(null)
-const runParams = reactive<Record<string, number>>({})
+const runParams = reactive<Record<string, string>>({})
 const showDeploy = ref(false)
 const viewRun = ref<AiRun | null>(null)
 const error = ref('')
+
+// §31 live-key probe
+const testing = ref(false)
+const testOk = ref(false)
+const testMsg = ref('')
 
 const products = ref<{ id: number; title: string }[]>([])
 const leads = ref<{ id: number; contact_name: string }[]>([])
@@ -57,7 +62,10 @@ async function run() {
   try {
     const params: Record<string, unknown> = {}
     for (const f of showRun.value.input_fields) {
-      if (runParams[f.key] != null) params[f.key] = Number(runParams[f.key])
+      const raw = runParams[f.key]
+      if (raw != null && raw !== '') {
+        params[f.key] = f.type === 'number' ? Number(raw) : raw
+      }
       else if (f.required) { error.value = `${f.label} is required`; return }
     }
     const fresh = await api.runAiOperator(showRun.value.id, params)
@@ -69,6 +77,21 @@ async function run() {
     error.value = (e as Error)?.data?.detail || (e as Error)?.message || 'Run failed'
   }
   finally { busyId.value = 0 }
+}
+
+async function testProvider() {
+  testing.value = true
+  testMsg.value = ''
+  try {
+    const res = await api.aiProviderTest()
+    testOk.value = true
+    testMsg.value = `live ✓ ${res.model} in ${res.latency_ms}ms — "${res.reply?.trim()}"`
+  }
+  catch (e: unknown) {
+    testOk.value = false
+    testMsg.value = (e as Error)?.data?.detail || (e as Error)?.message || 'test failed'
+  }
+  finally { testing.value = false }
 }
 
 async function deploy(b: AiBlueprint) {
@@ -118,12 +141,16 @@ const pretty = (o: Record<string, unknown>) => JSON.stringify(o, null, 2)
           model <span class="mono">{{ provider?.model }}</span>
           <template v-if="provider?.key_configured"> · {{ provider?.base_url }}</template>
         </span>
+        <button class="small ghost" style="margin-left:.8rem" :disabled="testing" @click="testProvider">
+          {{ testing ? 'Pinging…' : 'Test live key' }}
+        </button>
+        <span v-if="testMsg" class="mono" style="font-size:.74rem;margin-left:.6rem" :style="{ color: testOk ? '#00d68f' : '#f87171' }">{{ testMsg }}</span>
       </div>
       <div class="muted" style="font-size:.76rem">
         <template v-if="provider?.key_configured">Live DeepSeek inference (§31).</template>
         <template v-else>
           No <span class="mono">DEEPSEEK_API_KEY</span> set — operators run on the deterministic
-          heuristic engine derived from live Ecos data. Set the env var and restart to switch to DeepSeek.
+          heuristic engine derived from live Ecos data. Add the key to the project-root <span class="mono">.env</span> and restart to switch to DeepSeek.
         </template>
       </div>
     </div>
@@ -197,7 +224,9 @@ const pretty = (o: Record<string, unknown>) => JSON.stringify(o, null, 2)
           <select v-else-if="f.key === 'lead_id'" v-model.number="runParams[f.key]">
             <option v-for="l in leads" :key="l.id" :value="l.id">#{{ l.id }} — {{ l.contact_name }}</option>
           </select>
-          <input v-else v-model.number="runParams[f.key]" :type="f.type" />
+          <textarea v-else-if="f.type === 'text'" v-model="runParams[f.key]" rows="3"
+            :placeholder="f.placeholder || ''" />
+          <input v-else v-model="runParams[f.key]" :type="f.type" />
         </div>
         <div v-if="!showRun.input_fields.length" class="muted" style="font-size:.8rem">
           This operator needs no input — it reads the whole working set.

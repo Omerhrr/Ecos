@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, Integer, String, func
+from sqlalchemy import DateTime, Float, Index, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -39,3 +39,29 @@ class LedgerEntry(Base):
     # §27 settlements: which run settled this payable (NULL = still unsettled)
     settlement_run_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
     settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FxRate(Base):
+    """FX rate table (plan §46 — multi-currency).
+
+    Ledger money stays in its capture currency (NGN on the first corridor);
+    this table drives *display* conversion (USD pricing page, storefront
+    currency toggle) and the FX snapshot stamped onto orders at checkout.
+    Rates are directional: (base, quote) -> 1 base = rate quote.
+    """
+
+    __tablename__ = "fx_rates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    base: Mapped[str] = mapped_column(String(3), index=True)
+    quote: Mapped[str] = mapped_column(String(3), index=True)
+    rate: Mapped[float] = mapped_column(Float)
+    source: Mapped[str] = mapped_column(String(30), default="manual")  # manual | seed | api
+    updated_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("uq_fx_base_quote", "base", "quote", unique=True),
+    )

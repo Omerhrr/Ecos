@@ -88,6 +88,8 @@ def create_cart_order(
     delivery_fee: float = 0.0,
     lead_id: int | None = None,
     source: str = "checkout",
+    display_currency: str | None = None,
+    fx_rate_used: float | None = None,
 ) -> m.Order:
     """Multi-line order creation (plan §14 checkout completion).
 
@@ -125,6 +127,8 @@ def create_cart_order(
     order = m.Order(
         store_id=store_id, customer_id=customer_id, lead_id=lead_id,
         payment_method=payment_method, currency="NGN",
+        display_currency=(display_currency.upper() if display_currency else None),
+        fx_rate_used=fx_rate_used,
         items_total=items_total, delivery_fee=delivery_fee,
         total=items_total + delivery_fee,
     )

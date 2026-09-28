@@ -1,0 +1,205 @@
+     1→# Worklog
+     2→
+     3→---
+     4→Task ID: 1
+     5→Agent: main (Super Z)
+     6→Task: Install and scaffold Nuxt + FastAPI + SQLAlchemy project per user request. User's attached plan file was missing from upload/ directory.
+     7→
+     8→Work Log:
+     9→- Read upload/ — attachment "Pasted Content_1790577441741.txt" NOT found (empty upload dir); notified user to re-paste plan
+    10→- Verified environment: Node v24.21.0, npm 11.19.0, Python 3.12.14, uv 0.12.17
+    11→- Backend: created /home/z/my-project/backend with uv venv (.venv), installed fastapi 0.115.6, uvicorn 0.34.0, sqlalchemy 2.0.36, pydantic 2.10.4, python-dotenv
+    12→- Backend structure: app/main.py (FastAPI app, CORS for localhost:3000, startup create_all), app/database.py (DATABASE_URL resolver — converts platform "file:" scheme to sqlite URL, get_db dependency), app/models.py (placeholder Item model), app/schemas.py (ItemCreate/ItemRead pydantic), app/routers/items.py (CRUD: GET/POST "" , GET/DELETE /{id}) mounted at /api
+    13→- Fixed 307 redirect issue: router paths changed "/" -> "" so /api/items works without trailing slash
+    14→- Frontend: npx nuxi init timed out (network/interactive issue) — scaffolded Nuxt 4 manually: package.json, nuxt.config.ts (nitro.devProxy /api -> http://localhost:8000/api), tsconfig.json, app/app.vue, app/pages/index.vue (stack status + demo CRUD UI), app/composables/useApi.ts
+    15→- npm install: 587 packages; approved esbuild postinstall script + rebuilt
+    16→- .gitignore updated (venv, .nuxt, .output, dev.db, logs)
+    17→
+    18→Stage Summary:
+    19→- Backend verified: GET /api/health -> {"status":"ok"}; full item CRUD round-trip via curl (201/200/204)
+    20→- Frontend verified: Nuxt dev server on :3000 (200), /api proxy to :8000 works end-to-end (health, create, list)
+    21→- Both servers RUNNING: uvicorn :8000 (log /tmp/backend.log), nuxt dev :3000 (log /tmp/frontend.log)
+    22→- PLACEHOLDER Item model is demo scaffolding only — awaiting user's actual project plan (attachment was missing) to define real domain models/features
+    23→
+    24→---
+    25→Task ID: 2
+    26→Agent: main (Super Z)
+    27→Task: Build ECOS Phase 1 (Luxeen's e-commerce OS) on the Nuxt + FastAPI + SQLAlchemy scaffold, per user's pasted 62-section plan.
+    28→
+    29→Work Log:
+    30→- Restructured backend into domain modules per plan §42: app/{core,identity,supply,catalog,storefront,crm,orders,logistics,payments,finance,analytics}
+    31→- core: database (DATABASE_URL resolver), events.py (in-process event bus -> domain_events table, §40), models.py (DomainEvent), pricing.py (§12 waterfall: CNY cost -> FX 215 -> logistics/kg 3800 NGN -> payment 1.5% -> Luxeen 8% -> operator markup 10% -> round 5), subscribers.py (§41 deterministic automation), seed.py (corridor demo data)
+    32→- Domains: identity (orgs/users), supply (suppliers CRUD), catalog (products + computed pricing breakdown, supplier isolation §9), storefront (stores), crm (customers, leads pipeline §17, /convert lead->customer+order), orders (state machine §19 + snapshots + payment creation), logistics (shipments, normalized tracking codes §23, tracking event -> shipment + order status cascade), payments (capture, COD §24), finance (ledger_entries, §26/§45)
+    33→- Fixed bugs: (1) lifespan never passed to FastAPI() -> tables/seed missing; (2) ledger waterfall ignored item weight -> operator margin negative; added weight_kg snapshot to OrderItem; (3) luxeen/operator economics were inflows -> made allocations (payables) so each transaction balances to 0.0 (proper double-entry, §27)
+    34→- Added /api/customers (dedicated customers_router) for order form
+    35→- Analytics (§29): /summary, /funnel, /top-products; /api/events audit trail endpoint
+    36→- Seed: Luxeen + Kara Commerce orgs, 3 CN suppliers, 6 products, 1 NG store, 5 customers, 5 leads, 5 orders via REAL services (2 delivered incl COD auto-collect + ledger, 1 in transit, 1 confirmed, 1 pending)
+    37→- Frontend rebuilt as ECOS Command Center: dark sidebar shell, main.css design system, KpiCard/StatusBadge components, useApi (full typed client), useFormat/useStatusColor; pages: dashboard (KPIs+funnel+recent orders+top products), catalog (grid + create modal w/ live price waterfall preview), crm (3-column board + advance/convert), orders (table + create), orders/[id] (items, customer, payment capture, tracking timeline + advance, state transitions), logistics, finance (ledger + balance check), events (filterable stream)
+    38→- Verified live: full §60 loop — lead -> convert -> order -> confirm -> fulfill -> picked_up..delivered -> COD auto-collected -> ledger waterfall balanced 0.0 -> finance.settlement_ready
+    39→
+    40→Stage Summary:
+    41→- Backend: uvicorn :8000, 11 domain routers, ~25 endpoints, 13 tables, event-driven automation working
+    42→- Frontend: Nuxt :3000, 8 pages all HTTP 200, zero compile errors
+    43→- Deliberately deferred (per plan phasing): auth/JWT (§43 permissions), public storefront + landing page engine (§14-15), marketing attribution (§16), returns module (§28), settlements engine (§27), AI harness operators (§31-38), Alembic migrations
+    44→- DB: sqlite via DATABASE_URL file: scheme (/home/z/my-project/db/custom.db), reseeded fresh on this build
+    45→
+    46→---
+    47→Task ID: 3
+    48→Agent: main (Super Z)
+    49→Task: Build ECOS Phase 2 per user request: (1) auth + tenancy permissions (§43), (2) landing page engine (§15), (3) public storefront pages (§14).
+    50→
+    51→Work Log:
+    52→- §43 auth core (stdlib-only, zero new deps): core/security.py (PBKDF2-SHA256 120k + HS256 JWT, 12h TTL), core/permissions.py (19 perms across 10 modules; roles luxeen_admin/owner/admin/manager/agent/viewer), core/deps.py (AuthContext, require_auth, require_perm factory)
+    53→- User model: +password_hash, +is_active; identity router: POST /auth/login, GET /auth/me, POST /users (identity:manage, platform staff may target any org); /orgs //users tenant-filtered, /api/events now requires auth
+    54→- All 11 domain routers guarded: router-level read perm + write perm on mutating endpoints (catalog, supply, storefront, crm leads/customers, orders, logistics, payments, finance, analytics, landing pages)
+    55→- §15 landing_pages domain: LandingPage model (slug unique, blocks/theme/seo JSON, draft|published), blocks.py (9-type registry: hero/rich_text/image_text/feature_grid/product_showcase/testimonials/faq/trust_badges/cta; sanitize_blocks validation; resolve_blocks embeds public product cards into showcase on render), admin router (CRUD + publish/unpublish + /blocks registry endpoint, org-scoped, slug regex + uniqueness)
+    56→- §14 public storefront API (no auth): /public/store, /public/home (store + published `home` page + latest products), /public/products, /public/products/{slug}, /public/pages/{slug}, POST /public/leads (COD order intent -> CRM lead source=storefront); public_card() guarantees zero supplier/cost leakage (§9); Product.slug column added (auto-slugify in catalog create)
+    57→- Seed: users w/ password demo1234 (owner@kara.example owner, bisi@kara.example agent, ops@luxeen.example luxeen_admin), product slugs + picsum images, published `home` page (6 blocks) + draft `smartwatch-launch` page; DB wiped & reseeded (no Alembic yet)
+    58→- Frontend: app.vue -> NuxtLayout wrapper; layouts/default.vue (admin shell + Landing Pages nav + user chip + Sign out + View storefront link); layouts/public.vue (storefront chrome w/ store name + footer); middleware/auth.global.ts (client-side guard, public: /, /login, /lp/*, /products/*); useAuth composable (localStorage session); useApi rewritten: authed $fetch instance w/ Bearer header + 401 redirect, + auth/landing/public endpoints + full types
+    59→- Pages: /login (demo accounts); dashboard moved / -> /dashboard; /landing-pages (list + create + publish/unpublish + delete); /landing-pages/[id] (registry-driven block editor: add/reorder/delete blocks, per-type dynamic fields, theme color, SEO, save); public: / (home page blocks + latest products), /products, /products/[slug] (gallery + specs + COD order-intent form), /lp/[slug] (theme color via CSS var, SEO head)
+    60→- Infra fix: sandbox reaps background processes on shell exit; added scripts/daemon_start.py (double-fork daemonizer) — uvicorn now survives across sessions
+    61→- Verified in browser (agent-browser): home renders hero/badges/showcase, login->dashboard, landing pages list + editor, PDP COD form -> "Request received", unauth /dashboard -> /login redirect; curl RBAC: no-token 401, agent catalog:write 403 but crm:write 201, manager supply:write 403 but landing_pages:write 201, luxeen_admin cross-org pages + provisioning into Kara org; public PDP leak-check clean; storefront leads visible in CRM (lead #7, #8)
+    62→
+    63→Stage Summary:
+    64→- Backend: 15 routers mounted, 3 new tables (landing_pages), auth on all admin routes; uvicorn :8000 (daemonized, log /tmp/backend.log)
+    65→- Frontend: 13 pages (8 admin + 5 public/login), 2 layouts, global auth middleware; nuxt :3000 (log /tmp/frontend.log)
+    66→- Deliberately deferred: checkout cart + direct public order creation, page versioning/scheduling, per-block preview thumbnails, marketing attribution (§16), returns (§28), settlements engine (§27), AI harness (§31-38), Alembic migrations, token refresh
+    67→
+    68→---
+    69→Task ID: 4
+    70→Agent: main (Super Z)
+    71→Task: Push to github.com/Omerhrr/Ecos; wire CRM board to storefront leads; add marketing attribution (§16); build returns module (§28).
+    72→
+    73→Work Log:
+    74→- GitHub push FAILED: token ghp_XH8...aNG is invalid (GitHub API 401 Bad credentials; also rejected by git). Remote removed; work committed locally (commit 2350728) — push is one command once a valid token arrives.
+    75→- marketing domain (§16): Campaign model (org_id, name, channel, status, utm_campaign attribution key, landing_page_slug, budget_ngn); service (normalize_utm, resolve_campaign_id via utm key -> fallback single active channel match, campaign_report with per-campaign + per-source + totals incl. revenue/CPA/CPL/conversion and 'direct' bucket for leadless orders); router (/marketing/campaigns CRUD + /marketing/attribution) guarded by new marketing:read/write perms.
+    76→- returns domain (§28): ReturnOrder model + narrow state machine (requested -> approved -> received -> refunded/closed, rejected side-exit, open-RMA guard per order); service (create validates returnable statuses fulfilled/in_transit/out_for_delivery/delivered; mark_received flips ORDER -> returned + restocks items; refund calls payments.refund_payment + ORDER -> returned -> refunded); router /returns CRUD + action endpoints + /returns/eligible-orders.
+    77→- Event-driven finance: payments.refund_payment publishes payment.refunded -> new finance subscriber writes immutable 'refund' ledger entry (signed negative); payments service now has refund_payment (paid-only guard).
+    78→- §16 attribution plumbing: Lead model +campaign_id +utm (JSON text); crm.create_lead + public submit_order_intent normalize utm, resolve campaign_id, serialize campaign_name + raw utm; LeadSource 'storefront' added.
+    79→- Seed rebuilt: 4 campaigns (Q3 Lagos Electronics, Neck Fool Summer, Smartwatch Launch Week w/ /lp/smartwatch-launch, WA Resellers), all leads attributed incl. 2 storefront leads with utm, tiktok lead converted into order 3 (campaign revenue demo), RMA-00001 on delivered+paid order 2; DB wiped & reseeded.
+    80→- Frontend: useApi (+Campaign/AttributionReport/ReturnOrder types + endpoints, submitOrderIntent utm param); NEW composable useUtm.ts (sessionStorage last-touch capture, referrer/landing_page fallback); BlockRenderer CTAs now auto-tag hrefs with stored utm_campaign (attribution survives LP -> PDP hop); lp/[slug] captures utm + tags blocks with page slug; home + /products capture on mount.
+    81→- Frontend pages: crm.vue upgraded (source filter chips w/ counts, STOREFRONT badge styling, resolved campaign line, utm hint, campaign datalist in lead form, campaign column in closed-leads table); NEW marketing.vue (KPIs, campaign table w/ spend/leads/conv/CPA + pause/activate, source bar breakdown, create modal); NEW returns.vue (status filter chips, RMA table w/ state-machine action buttons, open-RMA modal over eligible orders); orders/[id] adds 'Request return' shortcut; sidebar + Returns & Marketing links.
+    82→- Verified live: curl — attribution report totals (7 leads, 85.7% attributed), smartwatch campaign resolved on public UTM lead; full RMA flow create->approve->receive(order->returned+restock)->refund(order->refunded, payment->refunded, ledger -refund); UI — login, CRM board storefront filter/badges/campaign lines, marketing KPIs+table, returns page drove RMA-00001 approved->received->refunded via clicks, ledger shows both refund entries; browser journey home?utm_campaign -> CTA tag -> PDP intent -> lead #9 attributed to 'Q3 Lagos Electronics' with full utm payload.
+    83→
+    84→Stage Summary:
+    85→- Backend: 17 routers, 2 new tables (campaigns, return_orders), returns + marketing domains complete; refund path fully event-driven into ledger.
+    86→- Frontend: 15 admin/public pages; CRM <-> storefront <-> attribution loop verified end-to-end in browser.
+    87→- GitHub push blocked on valid token (user's ghp_... returned 401 Bad credentials) — all work is committed locally and ready to push.
+    88→
+    89→---
+    90→Task ID: 5
+    91→Agent: main (Super Z)
+    92→Task: Push ECOS to github.com/Omerhrr/Ecos using the new token provided by user.
+    93→
+    94→Work Log:
+    95→- User supplied fresh token after previous 401; verified via GitHub API (200, repo Omerhrr/Ecos accessible, repo empty)
+    96→- Pre-push audit: found .env and db/custom.db tracked by earlier checkpoint commits — untracked both (git rm --cached); confirmed .env holds only DATABASE_URL (no secrets); git grep confirmed zero full tokens in tracked files (worklog has redacted refs only)
+    97→- Hardened .gitignore: added *.db, db/, logs/, *.sqlite3
+    98→- Added remote with token embedded in URL (stored only in local .git/config, never committed); pushed main -> origin (new branch, no conflicts)
+    99→- Verified origin/main: 7 commits, 96 files (backend/ frontend/ scripts/ worklog.md); .env + db excluded
+   100→- Post-push smoke test against live servers (uvicorn :8000, nuxt :3000 both healthy): /api/health ok; /api/leads -> 9 leads (sources: storefront, tiktok, whatsapp, meta_ads, organic); /api/marketing/attribution -> campaigns w/ spend+leads+conversion; /api/returns -> RMAs present incl. refunded flow
+   101→
+   102→Stage Summary:
+   103→- ECOS is now on GitHub: https://github.com/Omerhrr/Ecos (branch main)
+   104→- All prior directives confirmed live: CRM board <-> storefront leads, marketing attribution §16, returns module §28
+   105→- Note: token persists in .git/config for future pushes; rotate/revoke if it was shared unintentionally
+   106→
+   107→---
+   108→Task ID: 6
+   109→Agent: main (Super Z)
+   110→Task: Build settlements engine (§27), DeepSeek AI harness (§31+), and Alembic migrations to replace wipe-and-reseed.
+   111→
+   112→Work Log:
+   113→- §27 settlements domain: SettlementRun (STL-xxxxx, draft->approved->executed, cancel side-exit) + SettlementLine (counterparty bucket w/ entry_ids traceability); LedgerEntry +settlement_run_id +settled_at columns. Service derives obligations purely from unsettled negative ledger entries; counterparty resolution walks order->item->product->supplier (named supplier payouts), store->org (operator), fixed labels for Luxeen/logistics/processor, customer refunds included. build_run / approve / execute (stamps entries + fires settlement.completed) / cancel + /preview endpoint. Seed: STL-00001 executed on order-1 batch, order-2 entries left unsettled for the live preview.
+   114→- §31 AI harness: core/llm.py provider layer — DeepSeek chat-completions (OpenAI-compatible, DEEPSEEK_API_KEY/DEEPSEEK_MODEL env, json_mode) with deterministic heuristic-fallback engine (operators embed [[HEURISTIC]] payloads computed from live DB so output stays data-driven without a key; provider_info shows which brain is active). 4 blueprints in ai_harness/operators.py: pricing_analyst (Margin Sentinel — margin/velocity scan, apply=recompute markup to hit approved price), demand_forecaster (Stock Prophet — velocity vs lead-time, advisory), copywriter (Launch Scribe — apply=creates draft LandingPage via §15 engine), lead_responder (Lead Whisperer — apply=saves reply to lead notes + status). AiOperator/AiRun models w/ full audit (input/output/error/provider/tokens/latency/approved_by); run loop parses JSON output, publishes ai.run.completed/failed; governance: proposals stay pending until ai_harness:approve holder approves -> apply() executes side effect -> proposal_status=applied. New perms settlements:read/write, ai_harness:read/write/approve (agent denied, manager read-only settlements).
+   115→- Alembic: alembic.ini + migrations/env.py wired to app DATABASE_URL resolver + full metadata (render_as_batch for SQLite). Baseline f30b14c24906 autogenerated on empty DB (21 tables). main.py lifespan: create_all REPLACED by _run_migrations() — fresh DB -> upgrade head; legacy create_all DB (tables, no alembic_version) -> stamp head (adopted live DB with zero data loss). scripts/verify_migrations.py validates all three paths (fresh build + metadata parity + legacy adoption) — ALL PASS.
+   116→- Frontend: useApi +SettlementRun/Line/Preview +AiOperator/Run/Blueprint/ProviderInfo + endpoints; NEW pages settlements.vue (unsettled-payables panel, build modal, runs table w/ expandable lines showing ledger entry ids, approve/execute/cancel) and ai-harness.vue (provider banner w/ DeepSeek-vs-fallback status, operator cards w/ run/pause + pending badges, deploy-from-registry modal, runs table w/ token/latency audit, output viewer w/ applied side effects, approve/reject); sidebar +Settlements +AI Harness.
+   117→- Verified: backend restart w/ legacy stamp preserved all data; UI drove STL-00003 build->approve->execute (5 entries stamped); UI ran Margin Sentinel -> proposal pending -> approved -> LED lamp price 15310->14085; copywriter approval created draft page smart-fitness-watch-pro-ai-copy; lead_responder saved draft + status flip; RBAC 403s (agent approve/settlements-write); event stream: settlement.completed x2, ai.run.completed x5, ai.proposal.approved x4; screenshots in download/.
+   118→- Note: heuristic-fallback active (no DEEPSEEK_API_KEY in env). Add key -> restart -> same operators run live DeepSeek inference, no code changes.
+   119→
+   120→Stage Summary:
+   121→- Backend: 19 routers, 4 new tables (settlement_runs, settlement_lines, ai_operators, ai_runs), migrations own the schema.
+   122→- Frontend: 17 pages; settlements + AI harness verified end-to-end in browser (owner role).
+   123→- DB: live db/custom.db now stamped at baseline f30b14c24906; future schema changes = alembic revision --autogenerate + upgrade, no more wipes.
+   124→
+   125→---
+   126→Task ID: 7
+   127→Agent: main (Super Z)
+   128→Task: Build notifications domain (§39) and procurement/POs to action Stock Prophet's reorders.
+   129→
+   130→Work Log:
+   131→- §39 notifications domain: Notification (per-user fan-out rows w/ read_at, level, category, entity ref, meta) + NotificationPreference (per-user per-category in_app/email/whatsapp switches, unique constraint). service.notify() = single fan-out point: resolves active users of an org, skips users who muted the category (dispatcher-level, not UI-level); notify_user() for direct rows; ensure_preferences() get-or-create defaults.
+   132→- §39 event wiring (15 subscriptions in notifications/subscribers.py): order.created/status_changed, payment.received/refunded/voided, shipment.delivered, return.requested/status_changed, settlement.completed, ai.run.failed/proposal.approved (org resolved via run->operator), reorder.suggested, procurement.po_created/po_received/po_cancelled. Handlers defensively resolve org (order->store->org) and stay silent when unresolvable.
+   133→- Router /api/notifications (require_auth only — everyone manages their own): list w/ unread_only/category/limit, unread-count, mark-one read, read-all, GET/PUT preferences, POST /test self-drop. No new perms needed.
+   134→- §21/§22 procurement domain: PurchaseOrder (PO-xxxxx, draft->submitted->confirmed->received, cancel exits; source manual|stock_prophet, source_run_id, org/created_by stamps, CNY supplier currency) + PurchaseOrderLine (qty_ordered/qty_received, unit_cost snapshot) + ReorderSuggestion (run_id+product unique; open->converted/dismissed/superseded; carries risk/velocity/cover/stock_at_time/suggested_qty).
+   135→- Stock Prophet bridge (procurement/subscribers.py): ai.run.completed w/ code=demand_forecaster -> sync_suggestions_from_run() materialises output as suggestions (idempotent per run), supersedes older open ones, fires reorder.suggested. refresh_from_latest_run() backfills on demand.
+   136→- Procurement service: create_po (validates supplier + per-supplier product grouping, snapshots unit costs), po_from_suggestions (groups by product supplier -> one PO per supplier, marks suggestions converted), submit/confirm/cancel (cancel reopens converted suggestions), receive_po (goods receipt: per-line qty guard, product.stock += qty, full coverage flips to received). Partial receives emit po_receiving progress events.
+   137→- Router /api/procurement (procurement:read router-level; procurement:write on mutating — owner/admin/luxeen_admin only, manager/agent read-only): PO CRUD-lite + actions + receive, suggestions list/refresh/create-po/dismiss. Create endpoints stamp caller org_id/user so notifications fan out correctly (bug found in smoke: org-less POs silently fanned to nobody).
+   138→- Permissions: +procurement:read (all roles incl. agent via READ list... actually agent list is explicit so agent = 403 on procurement, intended), +procurement:write.
+   139→- Wiring: main.py models+routers registered; migrations/env.py imports added; core/subscribers.register_all() lazily registers notifications + procurement subscribers.
+   140→- Alembic: autogenerated 0e5c6198ae2a (5 tables: notifications, notification_preferences, purchase_orders, purchase_order_lines, reorder_suggestions) on live DB; verify_migrations.py re-run — ALL PATHS PASS (fresh build = 27 tables, metadata parity, legacy adoption).
+   141→- Demo data story (Stock Prophet had nothing to flag — tiny velocity vs deep stock): seed now includes a 21-order sales burst + lean stocks on the two hot movers (neck fan, hair brush) so fresh DBs flag real stockouts; live DB replayed the same story through real APIs (scripts/burst_sales_live.py: orders via /api/orders, cycle-count PATCH, prophet run) — no wipe, migrations philosophy intact.
+   142→- Smoke test (scripts/smoke_notifications_procurement.py): 59/59 PASS — notification feed/read/preferences/test, refresh backfill, RBAC (agent 403 procurement write/read, 200 notifications), suggestions->2 POs (per supplier)->submit->confirm->partial+full receive, stock deltas (+17 brush, +12 fan), reorder.suggested/po_created/po_received notifications present, cancel-PO reopens suggestion, dismiss, empty-convert 400, read-all.
+   143→- Frontend: useApi +Notification/Preference/ReorderSuggestion/PurchaseOrder types + 15 endpoints; NEW pages procurement.vue (suggestions board w/ risk badges + status chips, convert-all/one, dismiss, sync-from-prophet, PO table w/ expandable lines + received progress, goods-receipt modal w/ per-line qty, manual PO modal w/ supplier-filtered products) and notifications.vue (level-dot feed w/ category chips + unread counts, click-to-read, mark-all, per-category in_app/email/whatsapp preference toggles); sidebar +Procurement·POs +Notifications w/ live unread badge (30s poll).
+   144→- Verified in browser (agent-browser): unread badge shows live count; procurement page drove suggestions(+26/+18 stockout) -> Convert all -> 2 POs -> submit -> confirm -> goods receipt (flash "stock updated") -> suggestion flipped "converted PO #8"; notifications feed shows the whole story (Stock Prophet alert -> PO raised -> fully received); preference toggle persisted. Screenshots in download/.
+   145→
+   146→Stage Summary:
+   147→- Backend: 21 routers, 5 new tables, schema now owned by migrations through 0e5c6198ae2a.
+   148→- The §33->§21 loop is closed end-to-end: AI flags stockout -> suggestions materialise -> POs per supplier -> goods receipt restocks -> notifications narrate it.
+   149→- Demo data: Kara's movers burn stock realistically; rerunning burst_sales_live.py + prophet keeps the demo renewable (system heals itself when POs are received).
+   150→
+   151→---
+   152→Task ID: 8
+   153→Agent: main (Super Z)
+   154→Task: Fulfillment/warehouse domain (§22 deep-dive with PO receipts), public checkout cart -> direct orders (§14 completion), notifications channel workers (email/WhatsApp outbound, §39 Phase 3).
+   155→
+   156→Work Log:
+   157→- Environment rebuild after sandbox reset: backend .venv + frontend node_modules reinstalled, .env (DATABASE_URL) recreated, git core.fileMode false (132 phantom mode diffs). Servers daemonized via scripts/daemon_start.py (uvicorn :8000, nuxt :3000).
+   158→- §22 warehouse domain (backend/app/warehouse/): Warehouse (code WH-xxx, is_default per org), StockItem (per warehouse+product on_hand/reserved), StockMovement (immutable signed ledger: receipt|pick|adjustment|transfer_in|transfer_out|return_restock, balance_after, reference type+id), PickWave (WV-xxxxx: open->picking->packed->completed, cancel exits) + PickLine (order-line snapshot, pending->picked->packed). Service: ensure_default_warehouse, receive_stock (putaway), adjust_stock (signed, syncs product.stock, publishes stock_adjusted), transfer_stock (two legs, guards), create_wave (validates confirmed/processing orders without shipments, builds lines, reports shortages), pick_wave (stock leaves shelf w/ pick movements; refuses on shortfall -> transfer stock in first), pack_wave, complete_wave (hands orders to logistics: create_shipment_for_order each, orders -> fulfilled), cancel_wave (restocks picked units as return_restock). Router /api/warehouse (warehouses CRUD, overview, movements, adjust, transfer, waves + pick/pack/complete/cancel); new perms warehouse:read (all roles incl. agent) / warehouse:write (owner/admin/luxeen_admin + manager ops).
+   159→- §21 x §22: procurement receive_po now takes warehouse_id + received_by; every received line posts a receipt StockMovement (ref purchase_order) into the target warehouse (default when omitted) on top of product.stock increment. ReceiptIn schema extended.
+   160→- §14 completion: orders/service.create_cart_order() (multi-line: per-line pricing waterfall, cost/weight snapshots, per-line stock decrement, one payment, order.created w/ line_count+source). Public endpoints: POST /public/checkout/quote (server-side cart pricing w/ in_stock flags), POST /public/checkout (find-or-create customer by phone, stock guard 409, real order + payment, storefront.checkout_completed event w/ normalized utm), GET /public/orders/{id}?phone= (customer tracking guarded by phone match).
+   161→- §39 Phase 3: users.phone column; NotificationOutbox table (channel, recipient, subject/body, status queued|sent|failed|skipped, attempts/max_attempts, provider, provider_ref, last_error, available_at for retry backoff). Dispatcher (notify/notify_user) now enqueues email/WhatsApp rows per user pref (email->user.email, whatsapp->user.phone). notifications/outbound.py: pluggable senders — SMTP when SMTP_HOST set, WhatsApp Cloud API (graph.facebook.com v21.0) when WHATSAPP_TOKEN+WHATSAPP_PHONE_NUMBER_ID set, else dev-console provider (logs to stdout, ref dev-<uuid>); process_outbox() drains due rows w/ exponential retry (60s*2^attempts) until max_attempts then failed; outbox_stats(). Router: GET /notifications/outbox (org-scoped, channel/status filters), /outbox/stats, POST /outbox/process. Background asyncio worker in lifespan ticks every 30s.
+   162→- Warehouse events -> notifications subscribers (wave_created info, wave_completed success w/ shipment ids, stock_adjusted warning only on losses, stock_transferred info).
+   163→- Alembic: autogenerated eb9661601ad6 (warehouses, stock_items, stock_movements, pick_waves, pick_lines, notification_outbox, users.phone) applied on live DB -> 33 tables; verify_migrations.py ALL PATHS PASS (fresh build, metadata parity, legacy adoption).
+   164→- Seed: Kara Main Warehouse (WH-001, default) + opening balances as receipt movements for all 6 products; users get phones; owner opted in to email+WhatsApp on orders+shipments (outbox story from seeded traffic). Demo wiped & reseeded (disposable dev DB; schema still migration-owned).
+   165→- Frontend: useCart composable (localStorage cart, qty clamped to stock); /cart public page (line steppers, totals, COD/bank-transfer picker, checkout form, success panel w/ order id); Add-to-cart on ProductCard + PDP (Added ✓ flash, Go to cart link); public header cart badge; middleware/useApi public paths fixed ('/products' exact and '/cart' were being swallowed by the '/products/' prefix check -> logged-out users bounced off the products list; now startsWith('/products') + '/cart'). Admin /warehouse page (4 tabs: Stock overview w/ warehouse filter, Pick waves board w/ per-state action buttons + expandable lines, Movements ledger w/ type+warehouse filters, Warehouses cards + create modal; adjust/transfer modals; new-wave modal multi-selects waveable orders). notifications.vue + Outbound channels panel (provider banner, per-channel chips sent/total, status filter chips, Run workers now, delivery table w/ attempts + provider ref + error). Sidebar + Warehouse link. useApi +Warehouse/Stock/Movement/PickWave/Outbox/Checkout types + ~20 endpoints.
+   166→- Smoke (scripts/smoke_task8.py): 59/59 PASS — warehouse list/default/opening balances, adjust +/-, transfer legs + overstock reject, PO receive->putaway at named warehouse (product.stock + StockItem + receipt movement), wave create->pick->pack->complete (shipments created, orders fulfilled, re-pick 400), agent RBAC (read 200 / write 403), checkout quote math, order placed (total matches quote, pending_confirmation, COD pending), customer dedupe by phone, phone-guarded tracking (403 wrong phone), in-app fan-out, outbox stats/filters/providers, workers drain (0 failed), provider refs, pref toggle -> test notification -> email row queued. Browser (agent-browser): storefront add-to-cart x2 -> badge -> /cart -> COD checkout -> "Order #32 placed!" success; admin: created wave from 3 confirmed orders -> Pick -> Pack -> Complete ("shipments created") -> movements ledger shows picks; outbox panel 100/100 email + 98/98 whatsapp sent; backend log has dev-console deliveries incl. "New order #32 — ₦42,010" to owner's email + WhatsApp. Screenshots in download/t8_*.png.
+   167→
+   168→Stage Summary:
+   169→- Backend: 22 routers, 6 new tables (33 total), schema migration-owned through eb9661601ad6.
+   170→- The three loops now close end-to-end: checkout cart -> real COD order -> operator notification -> email/WhatsApp delivery; PO goods receipt -> warehouse putaway -> pick wave -> shipment; preferences gate real channel deliveries at dispatch time.
+   171→- Real providers: set SMTP_HOST/SMTP_USER/SMTP_PASS/SMTP_FROM and WHATSAPP_TOKEN/WHATSAPP_PHONE_NUMBER_ID -> same workers send for real, zero code changes (dev-console active otherwise).
+   172→- Backlog unchanged: Alembic fine-tuning (none needed this round), USD pricing page, storefront order-tracking UI page (API exists), returns restock -> warehouse movement wiring.
+   173→
+   174→---
+   175→Task ID: 9
+   176→Agent: main (Super Z)
+   177→Task: Wire RMA restock into warehouse movements (§28 x §22), public order-tracking page (§14, API existed), preview opened. LLM/DeepSeek live-key work deliberately parked by user until the rest is done.
+   178→
+   179→Work Log:
+   180→- §28 x §22 restock wiring: new warehouse service primitive restock_return() — bumps per-warehouse StockItem.on_hand AND network product.stock, posts immutable return_restock StockMovement (reference_type=return_order, reference_id=rma.id, note carries RMA number). returns.mark_received no longer touches stock directly: it resolves the target warehouse (explicit warehouse_id query param on POST /returns/{id}/receive, else the store org's default via ensure_default_warehouse), loops order lines through restock_return, then publishes warehouse.return_restocked {rma, order, warehouse, units, org_id}. Notification subscriber _on_return_restocked narrates it (category shipments, success). RMA with restock=False still skips all stock paths; double-receive stays guarded by the state machine.
+   181→- Public tracking API enriched (endpoint existed, phone-guarded): response now adds order_number ("#id") + shipment block (carrier, tracking_code, status, created/delivered_at) incl. up to 20 §23 tracking checkpoints (code, description, location, occurred_at) — customer-safe fields only.
+   182→- Frontend: NEW /track public page (order number accepts "#32"/"32" + checkout phone -> 7-step status ladder w/ done/current markers, terminal-state banners for cancelled/failed/returned/refunded/disputed, shipment card w/ checkpoint timeline, items + payment totals, /track?order= prefill; checkout success now links "Track this order"); auth middleware PUBLIC list + '/track'; public header nav + "Track order"; useApi + TrackingCheckpoint/PublicShipment types, PublicOrderStatus extended; nuxt.config devServer.host 0.0.0.0 + vite.server.allowedHosts:true and nuxt restarted on 0.0.0.0:3000 so the workspace is previewable from outside (uvicorn already 0.0.0.0:8000).
+   183→- No schema changes -> no migration needed.
+   184→- Smoke (scripts/smoke_task9.py): 26/26 PASS — RMA on fulfilled order #24: create->approve->receive?warehouse_id=WH-001, return_restock movement w/ RMA reference + note, qty==units, product.stock 87->88, StockItem.on_hand 88->89, notification narrated; tracking: order #20 shipment block (ECOS-NG-A7856A8E) + tracking_events key, wrong phone 403, unknown order 404; fresh checkout order #34 tracked instantly (pending_confirmation, shipment null, items visible). Browser (agent-browser): /track form -> order #34 ladder (step 1 of 7) + "no shipment yet"; order #20 -> 3 steps done, Ecos Network card + "Supplier processing · Origin, CN" checkpoint; screenshot download/t9_track_shipment.png. First run's 2 apparent fails were a script bug (double receive call) — fixed, all green.
+   185→- Note: smoke run consumed eligible orders #24/#25 into RMAs RMA-00003/00004 (both restocked) and placed demo orders #33/#34 — normal demo traffic.
+   186→
+   187→Stage Summary:
+   188→- The returns loop is now physically closed: RMA received -> goods back on a specific shelf -> movement ledger + notification narrate it -> storefront availability restored.
+   189→- Customers can self-serve order status end-to-end without an account (phone-guarded), incl. courier checkpoints once shipped.
+   190→- Pending (user-held): DeepSeek live key -> real AI inference (provider layer + operators already wired in core/llm.py + ai_harness; only the key/config is missing). Backlog otherwise: USD pricing page.
+   191→
+   192→---
+   193→Task ID: 10
+   194→Agent: main (Super Z)
+   195→Task: Archive the 62-section ECOS plan (re-pasted by user) and produce a full build-status audit.
+   196→
+   197→Work Log:
+   198→- User re-pasted the complete 62-section product blueprint (the original paste had been lost to context compression)
+   199→- Saved verbatim to PLAN.md (2245 lines, all 62 sections verified present) so the spec can never be lost again
+   200→- Created STATUS.md: per-section audit vs the codebase/worklog — 24 core done, 14 partial, 12 not started, 12 vision/context; ranked 10-item remaining engineering list (automation engine §41 first, AI live key §31 user-parked, missing operators §32/33/36/37/38, USD multi-currency §46, analytics suites §29, COD register §24, catalog variants §10, LP polish, token refresh, later bets)
+   201→- Committed + pushed docs to origin main
+   202→
+   203→Stage Summary:
+   204→- Plan and audit are now durable repo artifacts; every future task can be checked against PLAN.md and STATUS.md kept current.
+   205→

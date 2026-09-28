@@ -38,6 +38,18 @@ def provider():
     return llm.provider_info()
 
 
+@router.post(
+    "/provider/test",
+    dependencies=[Depends(require_perm("ai_harness:write"))],
+)
+def provider_test():
+    """Live DeepSeek ping — 400 with setup instructions when no key is set."""
+    try:
+        return llm.test_connection()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.get("/registry")
 def registry():
     return [

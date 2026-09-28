@@ -23,6 +23,7 @@ from app.core.database import get_db
 from app.core.events import publish
 from app.core.pricing import price_product
 from app.crm import models as crm_m
+from app.finance import fx as fx_service
 from app.landing_pages import models as lm
 from app.landing_pages.blocks import resolve_blocks
 from app.marketing import service as attribution
@@ -30,17 +31,42 @@ from app.storefront import models as stm
 
 public_router = APIRouter(prefix="/public", tags=["public-storefront"])
 
+DISPLAY_CURRENCIES = ["NGN", "USD"]
+
+
+def _fx(db: Session, quote: str) -> dict:
+    """Display-currency FX (§46). Falls back to the static corridor table."""
+    quote = (quote or "NGN").upper()
+    if quote not in DISPLAY_CURRENCIES:
+        raise HTTPException(422, f"currency must be one of {DISPLAY_CURRENCIES}")
+    if quote == "NGN":
+        return {"rate": 1.0, "source": "identity"}
+    try:
+        rate, source = fx_service.get_rate(db, "NGN", quote)
+    except ValueError:
+        rate, source = 1530.0, "static-fallback"
+    return {"rate": rate, "source": source}
+
+
+def _money_ngn(amount: float, fx: dict) -> dict:
+    """Customer-safe converted money block. Rounding: whole minor units."""
+    return {
+        "amount": round(amount * fx["rate"], 2),
+        "rate": fx["rate"],
+        "source": fx["source"],
+    }
+
 
 # ------------------------------------------------------------- serializers
 
-def public_card(db: Session, p: cm.Product) -> dict:
+def public_card(db: Session, p: cm.Product, fx: dict | None = None) -> dict:
     """Customer-safe product card. NO supplier, cost or margin fields."""
     breakdown = price_product(
         supplier_cost=p.supplier_cost, currency=p.currency,
         weight_kg=p.weight_kg, markup_pct=p.markup_pct,
     )
     images = p.images or []
-    return {
+    card = {
         "id": p.id,
         "slug": p.slug,
         "title": p.title,
@@ -51,6 +77,9 @@ def public_card(db: Session, p: cm.Product) -> dict:
         "images": images,
         "in_stock": p.stock > 0,
     }
+    if fx:
+        card["price_display"] = _money_ngn(breakdown.ecos_price_ngn, fx)
+    return card
 
 
 def _active_store(db: Session) -> stm.Store | None:
@@ -89,8 +118,9 @@ def get_store(db: Session = Depends(get_db)):
 
 
 @public_router.get("/home")
-def get_home(db: Session = Depends(get_db)):
+def get_home(currency: str = "NGN", db: Session = Depends(get_db)):
     """Storefront home aggregate: store + published `home` page + latest products."""
+    fx = _fx(db, currency)
     store = _active_store(db)
     if not store:
         raise HTTPException(404, "No active storefront yet")
@@ -112,29 +142,72 @@ def get_home(db: Session = Depends(get_db)):
     )
     return {
         "store": store_dict(store),
+        "currency": fx["rate"] and ("USD" if fx["rate"] != 1.0 else "NGN"),
+        "fx": fx,
         "page": page_dict(db, page) if page else None,
-        "products": [public_card(db, p) for p in products],
+        "products": [public_card(db, p, fx) for p in products],
     }
 
 
 @public_router.get("/products")
-def list_public_products(category: str | None = None, db: Session = Depends(get_db)):
+def list_public_products(category: str | None = None, currency: str = "NGN", db: Session = Depends(get_db)):
+    fx = _fx(db, currency)
     q = db.query(cm.Product).filter(cm.Product.status == "active").order_by(cm.Product.id.desc())
     if category:
         q = q.filter(cm.Product.category == category)
-    return [public_card(db, p) for p in q.limit(60).all()]
+    return [public_card(db, p, fx) for p in q.limit(60).all()]
 
 
 @public_router.get("/products/{slug}")
-def get_public_product(slug: str, db: Session = Depends(get_db)):
+def get_public_product(slug: str, currency: str = "NGN", db: Session = Depends(get_db)):
+    fx = _fx(db, currency)
     p = db.query(cm.Product).filter(cm.Product.slug == slug, cm.Product.status == "active").first()
     if not p:
         raise HTTPException(404, "Product not found")
     return {
-        **public_card(db, p),
+        **public_card(db, p, fx),
         "description": p.description,
         "specs": p.specs or {},
     }
+
+
+# ---------------------------------------------------------------------- §46
+
+@public_router.get("/fx")
+def public_fx(quote: str = "USD", db: Session = Depends(get_db)):
+    """Public display-FX (NGN -> quote) for the storefront currency toggle."""
+    info = _fx(db, quote)
+    return {"base": "NGN", **info}
+
+
+@public_router.get("/pricing")
+def public_pricing(db: Session = Depends(get_db)):
+    """The USD pricing page (§46): every active product priced in NGN and USD.
+    Supplier identity/costs stay hidden — the waterfall is applied, not shown."""
+    try:
+        usd_rate, usd_source = fx_service.get_rate(db, "NGN", "USD")
+    except ValueError:
+        usd_rate, usd_source = 1530.0, "static-fallback"
+    fx_usd = {"rate": usd_rate, "source": usd_source}
+    products = (
+        db.query(cm.Product)
+        .filter(cm.Product.status == "active")
+        .order_by(cm.Product.id.desc())
+        .all()
+    )
+    return {
+        "base_currency": "NGN",
+        "display_currencies": ["NGN", "USD"],
+        "usd": {"rate": usd_rate, "source": usd_source},
+        "products": [public_card(db, p, fx_usd) for p in products],
+    }
+
+
+def public_card_price(db: Session, p: cm.Product) -> float:
+    return price_product(
+        supplier_cost=p.supplier_cost, currency=p.currency,
+        weight_kg=p.weight_kg, markup_pct=p.markup_pct,
+    ).ecos_price_ngn
 
 
 @public_router.get("/pages/{slug}")
@@ -196,6 +269,7 @@ class CheckoutItemIn(BaseModel):
 class QuoteIn(BaseModel):
     items: list[CheckoutItemIn]
     delivery_fee: float = Field(default=0.0, ge=0)
+    display_currency: str = "NGN"
 
 
 @public_router.post("/checkout/quote")
@@ -203,7 +277,9 @@ def checkout_quote(payload: QuoteIn, db: Session = Depends(get_db)):
     """Price a cart (server-side waterfall) before placing the order."""
     lines = _resolve_checkout_items(db, [i.model_dump() for i in payload.items])
     items_total = sum(l["line_total"] for l in lines)
-    return {
+    total = items_total + payload.delivery_fee
+    fx = _fx(db, payload.display_currency)
+    out = {
         "currency": "NGN",
         "lines": [
             {
@@ -218,8 +294,15 @@ def checkout_quote(payload: QuoteIn, db: Session = Depends(get_db)):
         ],
         "items_total": items_total,
         "delivery_fee": payload.delivery_fee,
-        "total": items_total + payload.delivery_fee,
+        "total": total,
     }
+    if fx["rate"] != 1.0:
+        out["display"] = {
+            "currency": payload.display_currency.upper(),
+            "items_total": _money_ngn(items_total, fx),
+            "total": _money_ngn(total, fx),
+        }
+    return out
 
 
 class CheckoutIn(BaseModel):
@@ -232,6 +315,7 @@ class CheckoutIn(BaseModel):
     payment_method: str = "cod"  # cod | online_transfer
     note: str = ""
     utm: dict = {}
+    display_currency: str = "NGN"  # §46 display-only; settlement stays NGN
 
 
 @public_router.post("/checkout", status_code=201)
@@ -281,6 +365,9 @@ def checkout(payload: CheckoutIn, db: Session = Depends(get_db)):
             items=[{"product_id": l["product"].id, "qty": l["qty"]} for l in lines],
             payment_method=payload.payment_method, delivery_fee=0.0,
             source="storefront_checkout",
+            display_currency=payload.display_currency,
+            fx_rate_used=(_fx(db, payload.display_currency)["rate"]
+                          if payload.display_currency.upper() != "NGN" else None),
         )
     except ValueError as exc:
         db.rollback()
@@ -302,6 +389,7 @@ def checkout(payload: CheckoutIn, db: Session = Depends(get_db)):
         "status": order.status,
         "total": order.total,
         "currency": "NGN",
+        "display_currency": order.display_currency,
         "payment_method": payload.payment_method,
         "customer_id": customer.id,
         "message": (
@@ -367,6 +455,8 @@ def public_order_status(order_id: int, phone: str, db: Session = Depends(get_db)
         "payment_status": order.payment_status,
         "total": order.total,
         "currency": order.currency,
+        "display_currency": order.display_currency,
+        "fx_rate_used": order.fx_rate_used,
         "placed_at": order.created_at.isoformat() if order.created_at else None,
         "items": [
             {"title": i.title, "qty": i.qty, "unit_price": i.unit_price}
