@@ -12,6 +12,8 @@ the visitor directly.
 
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -23,6 +25,7 @@ from app.core.pricing import price_product
 from app.crm import models as crm_m
 from app.landing_pages import models as lm
 from app.landing_pages.blocks import resolve_blocks
+from app.marketing import service as attribution
 from app.storefront import models as stm
 
 public_router = APIRouter(prefix="/public", tags=["public-storefront"])
@@ -151,6 +154,8 @@ class PublicLeadIn(BaseModel):
     contact_phone: str = Field(min_length=7, max_length=50)
     qty: int = Field(default=1, ge=1, le=99)
     note: str = ""
+    # §16 attribution context captured by the storefront (sessionStorage last-touch)
+    utm: dict = {}
 
 
 @public_router.post("/leads", status_code=201)
@@ -165,6 +170,8 @@ def submit_order_intent(payload: PublicLeadIn, db: Session = Depends(get_db)):
     if not product:
         raise HTTPException(404, "Product not found")
 
+    utm = attribution.normalize_utm(payload.utm)
+    campaign_text = utm.get("utm_campaign", "")
     lead = crm_m.Lead(
         store_id=store.id,
         product_id=product.id,
@@ -172,14 +179,17 @@ def submit_order_intent(payload: PublicLeadIn, db: Session = Depends(get_db)):
         contact_phone=payload.contact_phone.strip(),
         status="new",
         source="storefront",
-        campaign=f"storefront:/products/{product.slug}",
+        campaign=campaign_text or f"storefront:/products/{product.slug}",
+        utm=json.dumps(utm),
+        campaign_id=attribution.resolve_campaign_id(db, "storefront", campaign_text, utm),
         notes=payload.note or "",
     )
     db.add(lead)
     db.flush()
     publish(db, "lead.created", {
         "lead_id": lead.id, "store_id": store.id, "product_id": product.id,
-        "source": "storefront", "campaign": lead.campaign,
+        "source": "storefront", "campaign": lead.campaign, "campaign_id": lead.campaign_id,
+        "utm": utm,
     })
     db.commit()
     return {

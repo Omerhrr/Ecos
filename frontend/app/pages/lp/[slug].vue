@@ -2,11 +2,15 @@
 /**
  * Public landing page renderer (§15): /lp/{slug}.
  * Renders any PUBLISHED page's blocks; applies the page theme color.
+ * §16: the page itself is a campaign asset — UTM context is captured on
+ * arrival and every internal CTA carries the page's utm_campaign tag
+ * so downstream product views keep the attribution alive.
  */
 definePageMeta({ layout: 'public' })
 
 const route = useRoute()
 const api = useApi()
+const utm = useUtm()
 
 const page = ref<PublicPage | null>(null)
 const loading = ref(true)
@@ -14,7 +18,22 @@ const notFound = ref(false)
 
 const themeColor = computed(() => page.value?.theme?.primary || '#00b374')
 
+/** Append this page's utm_campaign to internal CTA hrefs (last-touch persists). */
+const taggedBlocks = computed<LandingPageBlock[]>(() => {
+  const blocks = page.value?.blocks ?? []
+  const tag = String(route.query.utm_campaign || route.params.slug || '')
+  return blocks.map((b) => {
+    const href = (b as Record<string, unknown>).cta_href
+    if (typeof href === 'string' && href.startsWith('/') && !href.includes('utm_campaign=')) {
+      const sep = href.includes('?') ? '&' : '?'
+      return { ...b, cta_href: `${href}${sep}utm_source=landing_page&utm_campaign=${encodeURIComponent(tag)}` }
+    }
+    return b
+  })
+})
+
 onMounted(async () => {
+  utm.capture(route.query)
   try {
     page.value = await api.publicPage(String(route.params.slug))
     const seo = page.value?.seo ?? {}
@@ -45,7 +64,7 @@ onMounted(async () => {
 
     <template v-else>
       <div :style="{ '--lp-primary': themeColor }">
-        <BlockRenderer v-for="b in page.blocks" :key="b.id" :block="b" />
+        <BlockRenderer v-for="b in taggedBlocks" :key="b.id" :block="b" />
       </div>
     </template>
   </div>

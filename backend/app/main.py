@@ -26,6 +26,8 @@ from app.logistics import models as logistics_models  # noqa: F401,E402
 from app.payments import models as payments_models  # noqa: F401,E402
 from app.finance import models as finance_models  # noqa: F401,E402
 from app.landing_pages import models as landing_models  # noqa: F401,E402
+from app.marketing import models as marketing_models  # noqa: F401,E402
+from app.returns import models as returns_models  # noqa: F401,E402
 
 from app.core.seed import seed_if_empty  # noqa: E402
 from app.core.deps import require_auth  # noqa: E402
@@ -42,6 +44,8 @@ from app.logistics.router import router as logistics_router  # noqa: E402
 from app.payments.router import router as payments_router  # noqa: E402
 from app.finance.router import router as finance_router  # noqa: E402
 from app.landing_pages.router import router as landing_pages_router  # noqa: E402
+from app.marketing.router import router as marketing_router  # noqa: E402
+from app.returns.router import router as returns_router  # noqa: E402
 from app.analytics.router import router as analytics_router  # noqa: E402
 from app.core.models import DomainEvent  # noqa: E402
 
@@ -76,7 +80,8 @@ app.add_middleware(
 for r in [
     auth_router, identity_router, supply_router, catalog_router, storefront_router,
     public_router, crm_router, customers_router, orders_router, logistics_router,
-    payments_router, finance_router, landing_pages_router, analytics_router,
+    payments_router, finance_router, landing_pages_router, marketing_router,
+    returns_router, analytics_router,
 ]:
     app.include_router(r, prefix="/api")
 

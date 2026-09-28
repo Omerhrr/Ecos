@@ -21,7 +21,20 @@ const lines = (key: string) =>
 const showcaseProducts = computed(() =>
   (props.block.products as Array<Record<string, unknown>> | undefined) ?? [],
 )
-const ctaHref = computed(() => String(props.block.cta_href || '/products'))
+
+/**
+ * §16: internal CTAs inherit the visitor's campaign from the last-touch
+ * UTM payload, so attribution survives the hop from landing page /
+ * home page into the product funnel.
+ */
+const utm = useUtm()
+const ctaHref = computed(() => {
+  const raw = String(props.block.cta_href || '/products')
+  const campaign = utm.read().utm_campaign
+  if (!campaign || raw.startsWith('http') || raw.includes('utm_campaign=')) return raw
+  const sep = raw.includes('?') ? '&' : '?'
+  return `${raw}${sep}utm_campaign=${encodeURIComponent(campaign)}`
+})
 </script>
 
 <template>

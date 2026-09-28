@@ -80,6 +80,21 @@ def _on_payment_received(db: Session, payload: dict) -> None:
     })
 
 
+def _on_payment_refunded(db: Session, payload: dict) -> None:
+    """Refund money-out entry (§26, §28). Amount arrives pre-signed (negative)."""
+    order_id = payload["order_id"]
+    amount = payload["amount"]
+    memo = f"Order {order_id} refund"
+    if payload.get("reference"):
+        memo += f" ({payload['reference']})"
+    db.add(fm.LedgerEntry(
+        order_id=order_id, entry_type="refund", party="customer",
+        amount=round(amount, 2), currency=payload.get("currency", "NGN"),
+        memo=memo,
+    ))
+
+
 def register_all() -> None:
     events.subscribe("order.status_changed", _on_order_status_changed)
     events.subscribe("payment.received", _on_payment_received)
+    events.subscribe("payment.refunded", _on_payment_refunded)

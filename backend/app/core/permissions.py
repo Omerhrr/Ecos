@@ -25,6 +25,8 @@ READ_PERMISSIONS = [
     "crm:read",
     "storefront:read",
     "landing_pages:read",
+    "marketing:read",
+    "returns:read",
     "analytics:read",
 ]
 
@@ -37,12 +39,15 @@ ALL_PERMISSIONS = READ_PERMISSIONS + [
     "crm:write",
     "storefront:write",
     "landing_pages:write",
+    "marketing:write",
+    "returns:write",
     "identity:manage",
 ]
 
 _ROLE_OPS_WRITE = [
     "catalog:write", "orders:write", "logistics:write",
     "crm:write", "storefront:write", "landing_pages:write",
+    "marketing:write", "returns:write",
 ]
 
 ROLE_PERMISSIONS: dict[str, list[str]] = {
@@ -53,7 +58,8 @@ ROLE_PERMISSIONS: dict[str, list[str]] = {
     "agent": [
         "catalog:read", "orders:read", "orders:write", "logistics:read",
         "crm:read", "crm:write", "storefront:read",
-        "landing_pages:read", "analytics:read",
+        "landing_pages:read", "marketing:read",
+        "returns:read", "returns:write", "analytics:read",
     ],
     "viewer": list(READ_PERMISSIONS),
 }

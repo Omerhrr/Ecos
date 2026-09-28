@@ -67,6 +67,9 @@ export interface Lead {
   status: string
   source: string
   campaign: string
+  campaign_id: number | null
+  campaign_name: string | null
+  utm: Record<string, string>
   assigned_agent: string
   notes: string
   created_at: string
@@ -168,6 +171,90 @@ export interface DomainEvent {
   name: string
   payload: Record<string, unknown>
   created_at: string
+}
+
+/* ---------------- §16 marketing attribution ---------------- */
+
+export interface Campaign {
+  id: number
+  org_id: number
+  name: string
+  channel: string
+  status: string
+  utm_campaign: string
+  landing_page_slug: string
+  budget_ngn: number
+  notes: string
+  created_at: string
+}
+
+export interface CampaignRow {
+  id: number
+  name: string
+  channel: string
+  status: string
+  utm_campaign: string
+  landing_page_slug: string
+  spend_ngn: number
+  leads: number
+  converted_leads: number
+  conversion_rate: number
+  orders: number
+  revenue_ngn: number
+  cpa_ngn: number | null
+  cost_per_lead_ngn: number | null
+}
+
+export interface SourceRow {
+  source: string
+  leads: number
+  converted_leads: number
+  orders: number
+  revenue_ngn: number
+}
+
+export interface AttributionReport {
+  campaigns: CampaignRow[]
+  by_source: SourceRow[]
+  totals: {
+    leads: number
+    converted_leads: number
+    conversion_rate: number
+    revenue_ngn: number
+    spend_ngn: number
+    attributed_lead_pct: number
+  }
+}
+
+/* ---------------- §28 returns ---------------- */
+
+export interface ReturnOrder {
+  id: number
+  rma_number: string
+  order_id: number
+  store_id: number
+  customer_id: number
+  customer_name: string | null
+  order_total: number | null
+  order_status: string | null
+  status: string
+  reason: string
+  resolution: string
+  restock: boolean
+  refund_amount: number
+  currency: string
+  notes: string
+  allowed_transitions: string[]
+  created_at: string
+}
+
+export interface EligibleOrder {
+  id: number
+  status: string
+  total: number
+  currency: string
+  payment_status: string
+  customer_name: string | null
 }
 
 export interface Summary {
@@ -362,6 +449,22 @@ export function useApi() {
     convertLead: (id: number) =>
       req<{ order_id: number }>(`/api/leads/${id}/convert`, { method: 'POST' }),
 
+    // ---- marketing attribution (§16) ----
+    campaigns: () => req<Campaign[]>('/api/marketing/campaigns'),
+    createCampaign: (body: Record<string, unknown>) =>
+      req<Campaign>('/api/marketing/campaigns', { method: 'POST', body }),
+    patchCampaign: (id: number, body: Record<string, unknown>) =>
+      req<Campaign>(`/api/marketing/campaigns/${id}`, { method: 'PATCH', body }),
+    attribution: () => req<AttributionReport>('/api/marketing/attribution'),
+
+    // ---- returns (§28) ----
+    returns: () => req<ReturnOrder[]>('/api/returns'),
+    eligibleOrders: () => req<EligibleOrder[]>('/api/returns/eligible-orders'),
+    createReturn: (body: Record<string, unknown>) =>
+      req<ReturnOrder>('/api/returns', { method: 'POST', body }),
+    returnAction: (id: number, action: 'approve' | 'reject' | 'receive' | 'refund' | 'close', body?: Record<string, unknown>) =>
+      req<ReturnOrder>(`/api/returns/${id}/${action}`, { method: 'POST', body: body ?? {} }),
+
     orders: (params?: { status?: string }) => req<Order[]>('/api/orders', { params }),
     order: (id: number) => req<OrderDetail>(`/api/orders/${id}`),
     createOrder: (body: Record<string, unknown>) =>
@@ -404,7 +507,7 @@ export function useApi() {
     publicProducts: () => req<PublicProduct[]>('/api/public/products'),
     publicProduct: (slug: string) => req<PublicProductDetail>(`/api/public/products/${slug}`),
     publicPage: (slug: string) => req<PublicPage>(`/api/public/pages/${slug}`),
-    submitOrderIntent: (body: { product_slug: string; contact_name: string; contact_phone: string; qty: number; note?: string }) =>
+    submitOrderIntent: (body: { product_slug: string; contact_name: string; contact_phone: string; qty: number; note?: string; utm?: Record<string, string> }) =>
       req<{ ok: boolean; lead_id: number; message: string }>('/api/public/leads', { method: 'POST', body }),
   }
 }

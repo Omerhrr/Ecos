@@ -6,11 +6,14 @@
 definePageMeta({ layout: 'public' })
 
 const api = useApi()
+const route = useRoute()
+const utm = useUtm()
 const home = ref<PublicHome | null>(null)
 const loading = ref(true)
 const failed = ref(false)
 
 onMounted(async () => {
+  utm.capture(route.query)
   try {
     home.value = await api.publicHome()
     if (home.value.page?.seo?.title) {

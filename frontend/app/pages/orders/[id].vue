@@ -49,6 +49,22 @@ const nextTrackingCode = computed(() => {
   const idx = last ? TRACKING_FLOW.indexOf(last) : -1
   return idx >= 0 && idx < TRACKING_FLOW.length - 1 ? TRACKING_FLOW[idx + 1] : TRACKING_FLOW[0]
 })
+
+// §28: orders in these states can enter the returns flow
+const canReturn = computed(() =>
+  order.value && ['fulfilled', 'in_transit', 'out_for_delivery', 'delivered'].includes(order.value.status),
+)
+
+async function requestReturn() {
+  await run(() => api.createReturn({
+    order_id: orderId.value,
+    reason: 'other',
+    resolution: 'refund',
+    restock: true,
+    notes: 'Opened from order detail page',
+  }))
+  navigateTo('/returns')
+}
 </script>
 
 <template>
@@ -65,6 +81,12 @@ const nextTrackingCode = computed(() => {
           </div>
         </div>
         <div class="row">
+          <button
+            v-if="canReturn" class="ghost" :disabled="busy"
+            @click="requestReturn"
+          >
+            ↩ Request return
+          </button>
           <button
             v-for="t in order.allowed_transitions" :key="t" class="ghost"
             :disabled="busy" @click="run(() => api.transitionOrder(order.id, t))"

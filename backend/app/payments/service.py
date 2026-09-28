@@ -34,6 +34,24 @@ def capture_payment(db: Session, payment: pm.Payment, *, reference: str = "") ->
     return payment
 
 
+def refund_payment(db: Session, payment: pm.Payment, *, reference: str = "") -> pm.Payment:
+    """Refund a captured payment — publishes `payment.refunded` so finance
+    writes the money-out ledger entry (§26) and returns audit stays intact."""
+    if payment.status != "paid":
+        raise ValueError(f"Cannot refund payment in status {payment.status}")
+
+    payment.status = "refunded"
+    payment.reference = reference or payment.reference
+
+    events.publish(db, "payment.refunded", {
+        "payment_id": payment.id, "order_id": payment.order_id,
+        "amount": -payment.amount,  # signed: money OUT of the network
+        "currency": payment.currency, "method": payment.method,
+        "reference": payment.reference,
+    })
+    return payment
+
+
 def sync_order_payment_status(db: Session, order_id: int) -> None:
     order = db.get(om.Order, order_id)
     payment = db.query(pm.Payment).filter(pm.Payment.order_id == order_id).first()

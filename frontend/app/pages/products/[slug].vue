@@ -8,6 +8,7 @@ definePageMeta({ layout: 'public' })
 
 const route = useRoute()
 const api = useApi()
+const utm = useUtm()
 
 const product = ref<PublicProductDetail | null>(null)
 const loading = ref(true)
@@ -24,6 +25,7 @@ const money = (n: number) =>
   new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 0 }).format(n)
 
 onMounted(async () => {
+  utm.capture(route.query)
   try {
     product.value = await api.publicProduct(String(route.params.slug))
     useHead({ title: product.value.title })
@@ -47,6 +49,7 @@ async function submitIntent() {
       contact_name: form.name.trim(),
       contact_phone: form.phone.trim(),
       qty: form.qty,
+      utm: utm.payload(),
     })
     submitted.value = true
   }

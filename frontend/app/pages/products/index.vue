@@ -2,10 +2,13 @@
 definePageMeta({ layout: 'public' })
 
 const api = useApi()
+const route = useRoute()
+const utm = useUtm()
 const products = ref<PublicProduct[]>([])
 const loading = ref(true)
 
 onMounted(async () => {
+  utm.capture(route.query)
   try {
     products.value = await api.publicProducts()
   }

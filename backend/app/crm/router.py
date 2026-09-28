@@ -1,3 +1,5 @@
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -7,6 +9,8 @@ from app.core.database import get_db
 from app.core.deps import require_perm
 from app.core.events import publish
 from app.crm import models as m
+from app.marketing import models as mm
+from app.marketing import service as attribution
 from app.orders import service as order_service
 from app.storefront import models as stm
 
@@ -27,6 +31,7 @@ class LeadIn(BaseModel):
     contact_phone: str
     source: str = "organic"
     campaign: str = ""
+    utm: dict = {}
     assigned_agent: str = ""
     notes: str = ""
 
@@ -40,12 +45,18 @@ class LeadPatch(BaseModel):
 def serialize(db: Session, l: m.Lead) -> dict:
     product = db.get(cm.Product, l.product_id)
     store = db.get(stm.Store, l.store_id)
+    campaign_name = None
+    if l.campaign_id:
+        c = db.get(mm.Campaign, l.campaign_id)
+        campaign_name = c.name if c else None
     return {
         "id": l.id, "store_id": l.store_id, "store_name": store.name if store else None,
         "product_id": l.product_id, "product_title": product.title if product else None,
         "customer_id": l.customer_id,
         "contact_name": l.contact_name, "contact_phone": l.contact_phone,
         "status": l.status, "source": l.source, "campaign": l.campaign,
+        "campaign_id": l.campaign_id, "campaign_name": campaign_name,
+        "utm": attribution.lead_utm_dict(l),
         "assigned_agent": l.assigned_agent, "notes": l.notes,
         "created_at": l.created_at.isoformat(),
     }
@@ -79,12 +90,18 @@ def create_lead(payload: LeadIn, db: Session = Depends(get_db)):
         raise HTTPException(400, "Unknown product")
     if not db.get(stm.Store, payload.store_id):
         raise HTTPException(400, "Unknown store")
-    lead = m.Lead(**payload.model_dump())
+    utm = attribution.normalize_utm(payload.utm)
+    lead = m.Lead(
+        **{k: v for k, v in payload.model_dump(exclude={"utm"}).items()},
+        utm=json.dumps(utm),
+        campaign_id=attribution.resolve_campaign_id(db, payload.source, payload.campaign, utm),
+    )
     db.add(lead)
     db.flush()
     publish(db, "lead.created", {
         "lead_id": lead.id, "store_id": lead.store_id,
         "product_id": lead.product_id, "source": lead.source, "campaign": lead.campaign,
+        "campaign_id": lead.campaign_id,
     })
     db.commit()
     return serialize(db, lead)

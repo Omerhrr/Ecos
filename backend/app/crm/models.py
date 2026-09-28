@@ -11,7 +11,9 @@ LEAD_STATUSES = [
     "unreachable", "cancelled", "returned", "refunded",
 ]
 
-LEAD_SOURCES = ["meta_ads", "google_ads", "organic", "whatsapp", "referral", "tiktok"]
+LEAD_SOURCES = [
+    "meta_ads", "google_ads", "organic", "whatsapp", "referral", "tiktok", "storefront",
+]
 
 
 class Customer(Base):
@@ -49,6 +51,9 @@ class Lead(Base):
     status: Mapped[str] = mapped_column(String(30), default="new", index=True)
     source: Mapped[str] = mapped_column(String(30), default="organic")
     campaign: Mapped[str] = mapped_column(String(255), default="")
+    # §16 attribution: resolved Campaign.id + raw UTM payload as JSON text
+    campaign_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    utm: Mapped[str] = mapped_column(String(1024), default="{}")
     assigned_agent: Mapped[str] = mapped_column(String(255), default="")
     notes: Mapped[str] = mapped_column(String(2048), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

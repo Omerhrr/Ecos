@@ -8,6 +8,7 @@ with a coherent, auditable story.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timezone
 
@@ -23,10 +24,12 @@ from app.identity import models as im
 from app.landing_pages import blocks as lp_blocks
 from app.landing_pages import models as lpm
 from app.logistics import service as logistics_service
+from app.marketing import models as mm
 from app.orders import models as om
 from app.orders import service as order_service
 from app.payments import models as pm
 from app.payments import service as payment_service
+from app.returns import service as returns_service
 from app.storefront import models as stm
 from app.supply import models as sm
 
@@ -112,6 +115,34 @@ def seed_if_empty(db: Session) -> bool:
     db.add(store)
     db.flush()
 
+    # --- Marketing campaigns (§16) — attribution keys the storefront carries ---
+    campaigns = [
+        mm.Campaign(
+            org_id=operator.id, name="Q3 Lagos Electronics", channel="meta_ads",
+            status="active", utm_campaign="q3-lagos-electronics", budget_ngn=450000,
+            notes="Meta ads targeting Lagos + Abuja, electronics angle.",
+        ),
+        mm.Campaign(
+            org_id=operator.id, name="Neck Fool Summer", channel="tiktok",
+            status="active", utm_campaign="neck-fool-summer", budget_ngn=180000,
+            notes="TikTok creator push for the neck fan, June-August.",
+        ),
+        mm.Campaign(
+            org_id=operator.id, name="Smartwatch Launch Week", channel="google_ads",
+            status="active", utm_campaign="smartwatch-launch",
+            landing_page_slug="smartwatch-launch", budget_ngn=250000,
+            notes="Search + Shopping ads pointing at the launch landing page.",
+        ),
+        mm.Campaign(
+            org_id=operator.id, name="WhatsApp Reseller Broadcast", channel="whatsapp",
+            status="active", utm_campaign="wa-resellers", budget_ngn=0,
+            notes="Organic broadcast to reseller groups; zero media spend.",
+        ),
+    ]
+    db.add_all(campaigns)
+    db.flush()
+    camp = {c.utm_campaign: c for c in campaigns}
+
     # --- Customers & leads (§17) ---
     customers = [
         crm_m.Customer(
@@ -125,17 +156,47 @@ def seed_if_empty(db: Session) -> bool:
     leads = [
         crm_m.Lead(store_id=store.id, product_id=products[0].id, contact_name=CUSTOMERS[0][0],
                    contact_phone=CUSTOMERS[0][1], status="new",
-                   source="meta_ads", campaign="Q3-Lagos-Electronics", assigned_agent="Bisi Agent"),
+                   source="meta_ads", campaign="q3-lagos-electronics",
+                   campaign_id=camp["q3-lagos-electronics"].id,
+                   utm=json.dumps({"utm_source": "facebook", "utm_medium": "cpc",
+                                   "utm_campaign": "q3-lagos-electronics"}),
+                   assigned_agent="Bisi Agent"),
         crm_m.Lead(store_id=store.id, product_id=products[1].id, contact_name=CUSTOMERS[1][0],
                    contact_phone=CUSTOMERS[1][1], status="contacted", source="meta_ads",
-                   campaign="Q3-Lagos-Electronics", assigned_agent="Bisi Agent"),
+                   campaign="q3-lagos-electronics",
+                   campaign_id=camp["q3-lagos-electronics"].id,
+                   utm=json.dumps({"utm_source": "instagram", "utm_medium": "cpc",
+                                   "utm_campaign": "q3-lagos-electronics"}),
+                   assigned_agent="Bisi Agent"),
         crm_m.Lead(store_id=store.id, product_id=products[2].id, contact_name=CUSTOMERS[2][0],
                    contact_phone=CUSTOMERS[2][1], status="interested", source="tiktok",
-                   campaign="Neck-Fool-Summer", assigned_agent="Bisi Agent"),
+                   campaign="neck-fool-summer",
+                   campaign_id=camp["neck-fool-summer"].id,
+                   utm=json.dumps({"utm_source": "tiktok", "utm_medium": "video",
+                                   "utm_campaign": "neck-fool-summer"}),
+                   assigned_agent="Bisi Agent"),
         crm_m.Lead(store_id=store.id, product_id=products[4].id, contact_name=CUSTOMERS[3][0],
                    contact_phone=CUSTOMERS[3][1], status="unreachable", source="organic"),
         crm_m.Lead(store_id=store.id, product_id=products[5].id, contact_name=CUSTOMERS[4][0],
-                   contact_phone=CUSTOMERS[4][1], status="new", source="whatsapp"),
+                   contact_phone=CUSTOMERS[4][1], status="new", source="whatsapp",
+                   campaign="wa-resellers", campaign_id=camp["wa-resellers"].id),
+        # §14 -> §16: storefront order intents carrying UTM context
+        crm_m.Lead(store_id=store.id, product_id=products[0].id,
+                   contact_name="Emeka Nwosu", contact_phone="+234 802 555 0188",
+                   status="new", source="storefront", campaign="smartwatch-launch",
+                   campaign_id=camp["smartwatch-launch"].id,
+                   utm=json.dumps({"utm_source": "google", "utm_medium": "cpc",
+                                   "utm_campaign": "smartwatch-launch",
+                                   "landing_page": "/lp/smartwatch-launch"})),
+        crm_m.Lead(store_id=store.id, product_id=products[3].id,
+                   contact_name="Halima Sule", contact_phone="+234 805 555 0177",
+                   status="interested", source="storefront",
+                   campaign="storefront:/products/led-rechargeable-lamp",
+                   utm=json.dumps({"utm_source": "facebook", "utm_medium": "social",
+                                   "utm_campaign": "q3-lagos-electronics",
+                                   "landing_page": "/products/led-rechargeable-lamp"}),
+                   campaign_id=camp["q3-lagos-electronics"].id,
+                   notes="Asked if the lamp charges with solar."),
     ]
     db.add_all(leads)
     db.flush()
@@ -172,11 +233,15 @@ def seed_if_empty(db: Session) -> bool:
     payment2 = db.query(pm.Payment).filter(pm.Payment.order_id == o2.id).first()
     payment_service.capture_payment(db, payment2, reference="TRF-99821")
 
-    # Order 3: in transit (customs stage)
+    # Order 3: in transit (customs stage) — converted FROM the tiktok lead (§16 revenue attribution)
     r = order_service.create_order(
         db, store_id=store.id, customer_id=customers[2].id,
         product_id=products[2].id, qty=1, payment_method="cod",
+        lead_id=leads[2].id,
     )
+    leads[2].customer_id = customers[2].id
+    leads[2].status = "order_created"
+    events.publish(db, "lead.updated", {"lead_id": leads[2].id, "changes": ["status", "customer_id"]})
     o3 = db.get(om.Order, r["id"])
     order_service.transition_order(db, o3, "confirmed")
     shipment3 = logistics_service.create_shipment_for_order(db, o3)
@@ -196,6 +261,12 @@ def seed_if_empty(db: Session) -> bool:
     order_service.create_order(
         db, store_id=store.id, customer_id=customers[4].id,
         product_id=products[5].id, qty=1, payment_method="online_transfer",
+    )
+
+    # --- Returns module (§28): a customer asked to send order 2 back ---
+    returns_service.create_return(
+        db, order=o2, reason="not_as_described", resolution="refund",
+        restock=True, notes="Customer says the earbuds do not pair; wants money back.",
     )
 
     # --- Landing page engine (§15) + storefront home (§14) ---
@@ -252,5 +323,5 @@ def seed_if_empty(db: Session) -> bool:
     ])
 
     db.commit()
-    print("[seed] China -> Nigeria corridor demo data created (auth, storefront, landing pages).")
+    print("[seed] corridor demo data created (auth, storefront, landing pages, campaigns §16, RMA §28).")
     return True
