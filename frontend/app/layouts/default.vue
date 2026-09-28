@@ -25,8 +25,10 @@ onMounted(() => {
         <NuxtLink to="/orders">Orders</NuxtLink>
         <NuxtLink to="/logistics">Logistics</NuxtLink>
         <NuxtLink to="/returns">Returns · RMA</NuxtLink>
+        <NuxtLink to="/settlements">Settlements</NuxtLink>
         <NuxtLink to="/finance">Finance · Ledger</NuxtLink>
         <NuxtLink to="/marketing">Marketing · Attribution</NuxtLink>
+        <NuxtLink to="/ai-harness">AI Harness</NuxtLink>
         <NuxtLink to="/landing-pages">Landing Pages</NuxtLink>
         <NuxtLink to="/events">Event Stream</NuxtLink>
       </nav>

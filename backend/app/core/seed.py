@@ -269,6 +269,30 @@ def seed_if_empty(db: Session) -> bool:
         restock=True, notes="Customer says the earbuds do not pair; wants money back.",
     )
 
+    # --- Settlements (§27): settle order 1's payables end-to-end; order 2's
+    # entries (incl. its refund) stay unsettled so the preview shows pending work ---
+    from app.settlements import service as settlement_service
+
+    run = settlement_service.build_run(
+        db, order_ids=[o1.id], note="Weekly corridor payout — order 1 batch",
+        org_id=operator.id,
+    )
+    settlement_service.approve_run(db, run)
+    settlement_service.execute_run(db, run)
+
+    # --- AI Harness (§31): deploy the operator bench + one advisory run ---
+    from app.ai_harness import service as ai_service
+
+    ai_ops = {}
+    for code in ("pricing_analyst", "demand_forecaster", "copywriter", "lead_responder"):
+        ai_ops[code] = ai_service.deploy_operator(
+            db, code=code, org_id=operator.id, actor={"user_id": owner.id},
+        )
+    ai_service.run_operator(
+        db, ai_ops["demand_forecaster"], {},
+        actor={"user_id": owner.id},
+    )
+
     # --- Landing page engine (§15) + storefront home (§14) ---
     home_blocks, _ = lp_blocks.sanitize_blocks([
         {"type": "hero",

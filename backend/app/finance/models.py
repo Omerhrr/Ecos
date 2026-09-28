@@ -36,3 +36,6 @@ class LedgerEntry(Base):
     currency: Mapped[str] = mapped_column(String(3), default="NGN")
     memo: Mapped[str] = mapped_column(String(1024), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # §27 settlements: which run settled this payable (NULL = still unsettled)
+    settlement_run_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

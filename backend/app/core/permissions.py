@@ -22,11 +22,13 @@ READ_PERMISSIONS = [
     "logistics:read",
     "payments:read",
     "finance:read",
+    "settlements:read",
     "crm:read",
     "storefront:read",
     "landing_pages:read",
     "marketing:read",
     "returns:read",
+    "ai_harness:read",
     "analytics:read",
 ]
 
@@ -36,11 +38,14 @@ ALL_PERMISSIONS = READ_PERMISSIONS + [
     "orders:write",
     "logistics:write",
     "payments:write",
+    "settlements:write",
     "crm:write",
     "storefront:write",
     "landing_pages:write",
     "marketing:write",
     "returns:write",
+    "ai_harness:write",
+    "ai_harness:approve",
     "identity:manage",
 ]
 

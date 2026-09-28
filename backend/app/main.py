@@ -28,6 +28,8 @@ from app.finance import models as finance_models  # noqa: F401,E402
 from app.landing_pages import models as landing_models  # noqa: F401,E402
 from app.marketing import models as marketing_models  # noqa: F401,E402
 from app.returns import models as returns_models  # noqa: F401,E402
+from app.settlements import models as settlements_models  # noqa: F401,E402
+from app.ai_harness import models as ai_models  # noqa: F401,E402
 
 from app.core.seed import seed_if_empty  # noqa: E402
 from app.core.deps import require_auth  # noqa: E402
@@ -46,14 +48,40 @@ from app.finance.router import router as finance_router  # noqa: E402
 from app.landing_pages.router import router as landing_pages_router  # noqa: E402
 from app.marketing.router import router as marketing_router  # noqa: E402
 from app.returns.router import router as returns_router  # noqa: E402
+from app.settlements.router import router as settlements_router  # noqa: E402
+from app.ai_harness.router import router as ai_router  # noqa: E402
 from app.analytics.router import router as analytics_router  # noqa: E402
 from app.core.models import DomainEvent  # noqa: E402
+
+
+def _run_migrations() -> None:
+    """Bring the schema to head with Alembic (replaces wipe-and-reseed).
+
+    - Fresh database            -> `upgrade head` builds the full schema.
+    - Legacy create_all database -> `stamp head` adopts it (identical schema,
+      produced from the same metadata) so future changes migrate normally.
+    """
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import inspect
+
+    ini_path = Path(__file__).resolve().parents[1] / "alembic.ini"
+    cfg = Config(str(ini_path))
+    cfg.set_main_option("script_location", str(Path(__file__).resolve().parents[1] / "migrations"))
+
+    inspector = inspect(engine)
+    tables = inspector.get_table_names()
+    if tables and "alembic_version" not in tables:
+        print("[migrations] legacy schema detected -> stamping head")
+        command.stamp(cfg, "head")
+    else:
+        command.upgrade(cfg, "head")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     subscribers.register_all()
-    Base.metadata.create_all(bind=engine)
+    _run_migrations()
     with SessionLocal() as db:
         seed_if_empty(db)
     yield
@@ -81,7 +109,7 @@ for r in [
     auth_router, identity_router, supply_router, catalog_router, storefront_router,
     public_router, crm_router, customers_router, orders_router, logistics_router,
     payments_router, finance_router, landing_pages_router, marketing_router,
-    returns_router, analytics_router,
+    returns_router, settlements_router, ai_router, analytics_router,
 ]:
     app.include_router(r, prefix="/api")
 

@@ -257,6 +257,103 @@ export interface EligibleOrder {
   customer_name: string | null
 }
 
+/* ---------------- §27 settlements ---------------- */
+
+export interface SettlementLine {
+  id: number
+  entry_type: string
+  party: string
+  counterparty: string
+  currency: string
+  amount: number
+  entry_count: number
+  entry_ids: number[]
+}
+
+export interface SettlementRun {
+  id: number
+  run_number: string
+  org_id: number | null
+  status: 'draft' | 'approved' | 'executed' | 'cancelled'
+  currency: string
+  total_amount: number
+  entry_count: number
+  line_count: number
+  note: string
+  executed_at: string | null
+  created_at: string | null
+  lines?: SettlementLine[]
+}
+
+export interface SettlementPreview {
+  lines: SettlementLine[]
+  total_amount: number
+  entry_count: number
+  currencies: string[]
+}
+
+/* ---------------- §31+ AI harness ---------------- */
+
+export interface AiInputField {
+  key: string
+  label: string
+  type: string
+  required: boolean
+}
+
+export interface AiBlueprint {
+  code: string
+  name: string
+  role_description: string
+  advisory: boolean
+  input_fields: AiInputField[]
+}
+
+export interface AiOperator {
+  id: number
+  org_id: number | null
+  code: string
+  name: string
+  role_description: string
+  autonomy: string
+  status: 'active' | 'paused'
+  input_fields: AiInputField[]
+  advisory: boolean
+  runs_total: number
+  runs_pending: number
+  last_run_id: number | null
+  last_run_status: string | null
+  last_run_at: string | null
+  created_at: string | null
+}
+
+export interface AiRun {
+  id: number
+  operator_id: number
+  operator_name: string | null
+  operator_code: string | null
+  status: 'succeeded' | 'failed'
+  proposal_status: 'pending' | 'approved' | 'rejected' | 'applied' | 'advisory' | null
+  input: Record<string, unknown>
+  output: Record<string, unknown>
+  error: string
+  provider: string
+  model: string
+  prompt_tokens: number
+  completion_tokens: number
+  latency_ms: number
+  approved_by: number | null
+  approved_at: string | null
+  created_at: string
+}
+
+export interface AiProviderInfo {
+  provider: 'deepseek' | 'heuristic-fallback'
+  model: string
+  key_configured: boolean
+  base_url: string | null
+}
+
 export interface Summary {
   revenue_ngn: number
   cod_pending_ngn: number
@@ -464,6 +561,30 @@ export function useApi() {
       req<ReturnOrder>('/api/returns', { method: 'POST', body }),
     returnAction: (id: number, action: 'approve' | 'reject' | 'receive' | 'refund' | 'close', body?: Record<string, unknown>) =>
       req<ReturnOrder>(`/api/returns/${id}/${action}`, { method: 'POST', body: body ?? {} }),
+
+    // ---- settlements (§27) ----
+    settlementPreview: () => req<SettlementPreview>('/api/settlements/preview'),
+    settlements: () => req<SettlementRun[]>('/api/settlements'),
+    settlement: (id: number) => req<SettlementRun>(`/api/settlements/${id}`),
+    buildSettlement: (body?: Record<string, unknown>) =>
+      req<SettlementRun>('/api/settlements', { method: 'POST', body: body ?? {} }),
+    settlementAction: (id: number, action: 'approve' | 'execute' | 'cancel') =>
+      req<SettlementRun>(`/api/settlements/${id}/${action}`, { method: 'POST', body: {} }),
+
+    // ---- AI harness (§31+, DeepSeek) ----
+    aiProvider: () => req<AiProviderInfo>('/api/ai/provider'),
+    aiRegistry: () => req<AiBlueprint[]>('/api/ai/registry'),
+    aiOperators: () => req<AiOperator[]>('/api/ai/operators'),
+    deployAiOperator: (code: string) =>
+      req<AiOperator>('/api/ai/operators', { method: 'POST', body: { code } }),
+    patchAiOperator: (id: number, body: Record<string, unknown>) =>
+      req<AiOperator>(`/api/ai/operators/${id}`, { method: 'PATCH', body }),
+    runAiOperator: (id: number, params: Record<string, unknown>) =>
+      req<AiRun>(`/api/ai/operators/${id}/run`, { method: 'POST', body: { params } }),
+    aiRuns: (operatorId?: number) =>
+      req<AiRun[]>('/api/ai/runs', { params: operatorId ? { operator_id: operatorId } : {} }),
+    aiRunAction: (id: number, action: 'approve' | 'reject', body?: Record<string, unknown>) =>
+      req<AiRun>(`/api/ai/runs/${id}/${action}`, { method: 'POST', body: body ?? {} }),
 
     orders: (params?: { status?: string }) => req<Order[]>('/api/orders', { params }),
     order: (id: number) => req<OrderDetail>(`/api/orders/${id}`),
