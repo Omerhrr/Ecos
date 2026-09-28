@@ -64,3 +64,24 @@ Stage Summary:
 - Backend: 15 routers mounted, 3 new tables (landing_pages), auth on all admin routes; uvicorn :8000 (daemonized, log /tmp/backend.log)
 - Frontend: 13 pages (8 admin + 5 public/login), 2 layouts, global auth middleware; nuxt :3000 (log /tmp/frontend.log)
 - Deliberately deferred: checkout cart + direct public order creation, page versioning/scheduling, per-block preview thumbnails, marketing attribution (§16), returns (§28), settlements engine (§27), AI harness (§31-38), Alembic migrations, token refresh
+
+---
+Task ID: 4
+Agent: main (Super Z)
+Task: Push to github.com/Omerhrr/Ecos; wire CRM board to storefront leads; add marketing attribution (§16); build returns module (§28).
+
+Work Log:
+- GitHub push FAILED: token ghp_XH8...aNG is invalid (GitHub API 401 Bad credentials; also rejected by git). Remote removed; work committed locally (commit 2350728) — push is one command once a valid token arrives.
+- marketing domain (§16): Campaign model (org_id, name, channel, status, utm_campaign attribution key, landing_page_slug, budget_ngn); service (normalize_utm, resolve_campaign_id via utm key -> fallback single active channel match, campaign_report with per-campaign + per-source + totals incl. revenue/CPA/CPL/conversion and 'direct' bucket for leadless orders); router (/marketing/campaigns CRUD + /marketing/attribution) guarded by new marketing:read/write perms.
+- returns domain (§28): ReturnOrder model + narrow state machine (requested -> approved -> received -> refunded/closed, rejected side-exit, open-RMA guard per order); service (create validates returnable statuses fulfilled/in_transit/out_for_delivery/delivered; mark_received flips ORDER -> returned + restocks items; refund calls payments.refund_payment + ORDER -> returned -> refunded); router /returns CRUD + action endpoints + /returns/eligible-orders.
+- Event-driven finance: payments.refund_payment publishes payment.refunded -> new finance subscriber writes immutable 'refund' ledger entry (signed negative); payments service now has refund_payment (paid-only guard).
+- §16 attribution plumbing: Lead model +campaign_id +utm (JSON text); crm.create_lead + public submit_order_intent normalize utm, resolve campaign_id, serialize campaign_name + raw utm; LeadSource 'storefront' added.
+- Seed rebuilt: 4 campaigns (Q3 Lagos Electronics, Neck Fool Summer, Smartwatch Launch Week w/ /lp/smartwatch-launch, WA Resellers), all leads attributed incl. 2 storefront leads with utm, tiktok lead converted into order 3 (campaign revenue demo), RMA-00001 on delivered+paid order 2; DB wiped & reseeded.
+- Frontend: useApi (+Campaign/AttributionReport/ReturnOrder types + endpoints, submitOrderIntent utm param); NEW composable useUtm.ts (sessionStorage last-touch capture, referrer/landing_page fallback); BlockRenderer CTAs now auto-tag hrefs with stored utm_campaign (attribution survives LP -> PDP hop); lp/[slug] captures utm + tags blocks with page slug; home + /products capture on mount.
+- Frontend pages: crm.vue upgraded (source filter chips w/ counts, STOREFRONT badge styling, resolved campaign line, utm hint, campaign datalist in lead form, campaign column in closed-leads table); NEW marketing.vue (KPIs, campaign table w/ spend/leads/conv/CPA + pause/activate, source bar breakdown, create modal); NEW returns.vue (status filter chips, RMA table w/ state-machine action buttons, open-RMA modal over eligible orders); orders/[id] adds 'Request return' shortcut; sidebar + Returns & Marketing links.
+- Verified live: curl — attribution report totals (7 leads, 85.7% attributed), smartwatch campaign resolved on public UTM lead; full RMA flow create->approve->receive(order->returned+restock)->refund(order->refunded, payment->refunded, ledger -refund); UI — login, CRM board storefront filter/badges/campaign lines, marketing KPIs+table, returns page drove RMA-00001 approved->received->refunded via clicks, ledger shows both refund entries; browser journey home?utm_campaign -> CTA tag -> PDP intent -> lead #9 attributed to 'Q3 Lagos Electronics' with full utm payload.
+
+Stage Summary:
+- Backend: 17 routers, 2 new tables (campaigns, return_orders), returns + marketing domains complete; refund path fully event-driven into ledger.
+- Frontend: 15 admin/public pages; CRM <-> storefront <-> attribution loop verified end-to-end in browser.
+- GitHub push blocked on valid token (user's ghp_... returned 401 Bad credentials) — all work is committed locally and ready to push.
