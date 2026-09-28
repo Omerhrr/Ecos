@@ -133,12 +133,12 @@ def reject(rma_id: int, payload: RejectIn, db: Session = Depends(get_db)):
 
 
 @router.post("/{rma_id}/receive", dependencies=[Depends(require_perm("returns:write"))])
-def receive(rma_id: int, db: Session = Depends(get_db)):
+def receive(rma_id: int, warehouse_id: int | None = None, db: Session = Depends(get_db)):
     r = db.get(m.ReturnOrder, rma_id)
     if not r:
         raise HTTPException(404, "Return not found")
     try:
-        service.mark_received(db, r)
+        service.mark_received(db, r, warehouse_id=warehouse_id)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     db.commit()

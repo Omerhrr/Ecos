@@ -314,7 +314,12 @@ def checkout(payload: CheckoutIn, db: Session = Depends(get_db)):
 
 @public_router.get("/orders/{order_id}")
 def public_order_status(order_id: int, phone: str, db: Session = Depends(get_db)):
-    """Customer order tracking — guarded by the checkout phone number."""
+    """Customer order tracking — guarded by the checkout phone number.
+
+    Returns the full customer-safe picture: status ladder, lines, payment,
+    and (once fulfilled) the shipment with its §23 tracking checkpoints.
+    """
+    from app.logistics import models as lm
     from app.orders import models as om
 
     order = db.get(om.Order, order_id)
@@ -324,8 +329,39 @@ def public_order_status(order_id: int, phone: str, db: Session = Depends(get_db)
     if not customer or customer.phone.strip() != phone.strip():
         raise HTTPException(403, "Phone does not match this order")
     items = db.query(om.OrderItem).filter(om.OrderItem.order_id == order.id).all()
+
+    shipment = (
+        db.query(lm.Shipment).filter(lm.Shipment.order_id == order.id).first()
+    )
+    shipment_out = None
+    if shipment:
+        checkpoints = (
+            db.query(lm.TrackingEvent)
+            .filter(lm.TrackingEvent.shipment_id == shipment.id)
+            .order_by(lm.TrackingEvent.occurred_at.desc(), lm.TrackingEvent.id.desc())
+            .limit(20)
+            .all()
+        )
+        shipment_out = {
+            "tracking_code": shipment.tracking_code,
+            "carrier": shipment.carrier,
+            "status": shipment.status,
+            "created_at": shipment.created_at.isoformat() if shipment.created_at else None,
+            "delivered_at": shipment.delivered_at.isoformat() if shipment.delivered_at else None,
+            "tracking_events": [
+                {
+                    "code": e.code,
+                    "description": e.description,
+                    "location": e.location,
+                    "occurred_at": e.occurred_at.isoformat() if e.occurred_at else None,
+                }
+                for e in checkpoints
+            ],
+        }
+
     return {
         "order_id": order.id,
+        "order_number": f"#{order.id}",
         "status": order.status,
         "payment_method": order.payment_method,
         "payment_status": order.payment_status,
@@ -336,6 +372,7 @@ def public_order_status(order_id: int, phone: str, db: Session = Depends(get_db)
             {"title": i.title, "qty": i.qty, "unit_price": i.unit_price}
             for i in items
         ],
+        "shipment": shipment_out,
     }
 
 

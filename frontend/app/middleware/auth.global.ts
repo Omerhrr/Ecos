@@ -1,9 +1,9 @@
 /**
  * Global auth guard (plan §43).
  *
- * Public routes (storefront, landing pages, PDP, login) are open.
- * Everything else (Command Center, catalog, CRM, orders, landing page
- * editor, ...) requires a session token — enforced client-side.
+ * Public routes (storefront, landing pages, PDP, cart, order tracking,
+ * login) are open. Everything else (Command Center, catalog, CRM, orders,
+ * landing page editor, ...) requires a session token — enforced client-side.
  */
 export default defineNuxtRouteMiddleware((to) => {
   if (import.meta.server) return
@@ -12,6 +12,7 @@ export default defineNuxtRouteMiddleware((to) => {
     path === '/'
     || path === '/login'
     || path === '/cart'
+    || path === '/track'
     || path.startsWith('/lp')
     || path.startsWith('/products')
 

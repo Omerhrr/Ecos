@@ -682,8 +682,25 @@ export interface CheckoutResult {
   message: string
 }
 
+export interface TrackingCheckpoint {
+  code: string
+  description: string
+  location: string
+  occurred_at: string | null
+}
+
+export interface PublicShipment {
+  tracking_code: string
+  carrier: string
+  status: string
+  created_at: string | null
+  delivered_at: string | null
+  tracking_events: TrackingCheckpoint[]
+}
+
 export interface PublicOrderStatus {
   order_id: number
+  order_number: string
   status: string
   payment_method: string
   payment_status: string
@@ -691,6 +708,7 @@ export interface PublicOrderStatus {
   currency: string
   placed_at: string | null
   items: { title: string; qty: number; unit_price: number }[]
+  shipment: PublicShipment | null
 }
 
 /* ---------------- §43 auth ---------------- */

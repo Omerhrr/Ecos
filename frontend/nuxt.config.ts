@@ -5,6 +5,11 @@ export default defineNuxtConfig({
 
   css: ['~/assets/css/main.css'],
 
+  // Listen on all interfaces + allow the preview gateway hostname,
+  // so the workspace is reachable from the outside (preview-*.space-z.ai).
+  devServer: { host: '0.0.0.0', port: 3000 },
+  vite: { server: { allowedHosts: true } },
+
   // Proxy /api requests to the FastAPI backend during development,
   // so the frontend can call /api/... without CORS friction.
   nitro: {

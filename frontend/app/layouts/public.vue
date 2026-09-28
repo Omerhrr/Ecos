@@ -35,6 +35,7 @@ onMounted(async () => {
         <nav class="pub-nav">
           <NuxtLink to="/">Home</NuxtLink>
           <NuxtLink to="/products">Products</NuxtLink>
+          <NuxtLink to="/track">Track order</NuxtLink>
           <NuxtLink to="/cart" class="pub-cart-link">
             Cart
             <span v-if="mounted && cart.count.value" class="pub-cart-badge">{{ cart.count.value > 99 ? '99+' : cart.count.value }}</span>

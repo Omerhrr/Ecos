@@ -170,3 +170,21 @@ Stage Summary:
 - The three loops now close end-to-end: checkout cart -> real COD order -> operator notification -> email/WhatsApp delivery; PO goods receipt -> warehouse putaway -> pick wave -> shipment; preferences gate real channel deliveries at dispatch time.
 - Real providers: set SMTP_HOST/SMTP_USER/SMTP_PASS/SMTP_FROM and WHATSAPP_TOKEN/WHATSAPP_PHONE_NUMBER_ID -> same workers send for real, zero code changes (dev-console active otherwise).
 - Backlog unchanged: Alembic fine-tuning (none needed this round), USD pricing page, storefront order-tracking UI page (API exists), returns restock -> warehouse movement wiring.
+
+---
+Task ID: 9
+Agent: main (Super Z)
+Task: Wire RMA restock into warehouse movements (§28 x §22), public order-tracking page (§14, API existed), preview opened. LLM/DeepSeek live-key work deliberately parked by user until the rest is done.
+
+Work Log:
+- §28 x §22 restock wiring: new warehouse service primitive restock_return() — bumps per-warehouse StockItem.on_hand AND network product.stock, posts immutable return_restock StockMovement (reference_type=return_order, reference_id=rma.id, note carries RMA number). returns.mark_received no longer touches stock directly: it resolves the target warehouse (explicit warehouse_id query param on POST /returns/{id}/receive, else the store org's default via ensure_default_warehouse), loops order lines through restock_return, then publishes warehouse.return_restocked {rma, order, warehouse, units, org_id}. Notification subscriber _on_return_restocked narrates it (category shipments, success). RMA with restock=False still skips all stock paths; double-receive stays guarded by the state machine.
+- Public tracking API enriched (endpoint existed, phone-guarded): response now adds order_number ("#id") + shipment block (carrier, tracking_code, status, created/delivered_at) incl. up to 20 §23 tracking checkpoints (code, description, location, occurred_at) — customer-safe fields only.
+- Frontend: NEW /track public page (order number accepts "#32"/"32" + checkout phone -> 7-step status ladder w/ done/current markers, terminal-state banners for cancelled/failed/returned/refunded/disputed, shipment card w/ checkpoint timeline, items + payment totals, /track?order= prefill; checkout success now links "Track this order"); auth middleware PUBLIC list + '/track'; public header nav + "Track order"; useApi + TrackingCheckpoint/PublicShipment types, PublicOrderStatus extended; nuxt.config devServer.host 0.0.0.0 + vite.server.allowedHosts:true and nuxt restarted on 0.0.0.0:3000 so the workspace is previewable from outside (uvicorn already 0.0.0.0:8000).
+- No schema changes -> no migration needed.
+- Smoke (scripts/smoke_task9.py): 26/26 PASS — RMA on fulfilled order #24: create->approve->receive?warehouse_id=WH-001, return_restock movement w/ RMA reference + note, qty==units, product.stock 87->88, StockItem.on_hand 88->89, notification narrated; tracking: order #20 shipment block (ECOS-NG-A7856A8E) + tracking_events key, wrong phone 403, unknown order 404; fresh checkout order #34 tracked instantly (pending_confirmation, shipment null, items visible). Browser (agent-browser): /track form -> order #34 ladder (step 1 of 7) + "no shipment yet"; order #20 -> 3 steps done, Ecos Network card + "Supplier processing · Origin, CN" checkpoint; screenshot download/t9_track_shipment.png. First run's 2 apparent fails were a script bug (double receive call) — fixed, all green.
+- Note: smoke run consumed eligible orders #24/#25 into RMAs RMA-00003/00004 (both restocked) and placed demo orders #33/#34 — normal demo traffic.
+
+Stage Summary:
+- The returns loop is now physically closed: RMA received -> goods back on a specific shelf -> movement ledger + notification narrate it -> storefront availability restored.
+- Customers can self-serve order status end-to-end without an account (phone-guarded), incl. courier checkpoints once shipped.
+- Pending (user-held): DeepSeek live key -> real AI inference (provider layer + operators already wired in core/llm.py + ai_harness; only the key/config is missing). Backlog otherwise: USD pricing page.

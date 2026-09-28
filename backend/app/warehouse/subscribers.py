@@ -2,7 +2,8 @@
 
 Only operationally interesting moments notify: a wave is created (work to
 do), completed (orders are on their way), stock is adjusted down (possible
-shrinkage), and transfers (stock moved between locations).
+shrinkage), transfers (stock moved between locations), and returned goods
+re-entering the shelf (§28 restock).
 """
 
 from __future__ import annotations
@@ -55,8 +56,19 @@ def _on_stock_transferred(db: Session, p: dict) -> None:
     )
 
 
+def _on_return_restocked(db: Session, p: dict) -> None:
+    svc.notify(
+        db, org_id=p.get("org_id"), category="shipments", level="success",
+        title=f"{p.get('units')} unit(s) restocked from {p.get('rma_number')}",
+        body=f"Returned goods received at {p.get('warehouse_code') or p.get('warehouse_id')} "
+             f"and back on the shelf (order #{p.get('order_id')}).",
+        entity_type="return_order", entity_id=p.get("rma_id"),
+    )
+
+
 def register() -> None:
     events.subscribe("warehouse.wave_created", _on_wave_created)
+    events.subscribe("warehouse.return_restocked", _on_return_restocked)
     events.subscribe("warehouse.wave_completed", _on_wave_completed)
     events.subscribe("warehouse.stock_adjusted", _on_stock_adjusted)
     events.subscribe("warehouse.stock_transferred", _on_stock_transferred)

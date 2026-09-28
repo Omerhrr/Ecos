@@ -206,6 +206,32 @@ def transfer_stock(
     return [out, inn]
 
 
+def restock_return(
+    db: Session, *, warehouse: m.Warehouse, product: cm.Product, qty: int,
+    rma_id: int | None = None, rma_number: str = "",
+    note: str = "", created_by: int | None = None,
+) -> m.StockMovement:
+    """Reverse-logistics putaway (§28 x §22): returned goods go back on the shelf.
+
+    Bumps the per-warehouse StockItem, the network-level `product.stock`
+    (the storefront oversell guard — returned units are sellable again),
+    and posts an immutable `return_restock` movement referencing the RMA.
+    """
+    if qty <= 0:
+        raise ValueError("Restock qty must be >= 1")
+    item = _get_stock_item(db, warehouse.id, product.id)
+    item.on_hand += qty
+    product.stock = (product.stock or 0) + qty
+    db.flush()
+    return _post_movement(
+        db, warehouse_id=warehouse.id, product_id=product.id,
+        movement_type="return_restock", qty=qty,
+        reference_type="return_order", reference_id=rma_id,
+        note=note or (f"RMA {rma_number} restock".strip() if rma_number else "Return restock"),
+        created_by=created_by, balance_after=item.on_hand,
+    )
+
+
 # --------------------------------------------------------------------------
 # Pick waves (§22 fulfillment)
 # --------------------------------------------------------------------------

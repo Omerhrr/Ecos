@@ -68,6 +68,7 @@ async function placeOrder() {
         <div class="cart-done-total">Total: <b>{{ money(result.total) }}</b> · {{ result.payment_method === 'cod' ? 'Pay on delivery' : 'Online transfer' }}</div>
         <p class="muted" style="font-size:.85rem">Keep your phone number handy — you can check the status any time with it.</p>
         <div class="cart-done-actions">
+          <NuxtLink :to="`/track?order=${result.order_id}`" class="pub-btn dark">Track this order</NuxtLink>
           <NuxtLink to="/products" class="pub-btn">Keep shopping</NuxtLink>
         </div>
       </div>
