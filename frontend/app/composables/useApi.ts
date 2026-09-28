@@ -555,6 +555,144 @@ export interface PublicPage {
   seo: Record<string, string>
 }
 
+/* ---------------- §39 notifications + §39 Phase 3 outbox ---------------- */
+
+export interface OutboxRow {
+  id: number
+  org_id: number | null
+  user_id: number
+  channel: 'email' | 'whatsapp'
+  recipient: string
+  category: string
+  subject: string
+  body: string
+  notification_id: number | null
+  status: 'queued' | 'sent' | 'failed' | 'skipped'
+  attempts: number
+  max_attempts: number
+  provider: string
+  provider_ref: string
+  last_error: string
+  available_at: string | null
+  sent_at: string | null
+  created_at: string | null
+}
+
+export interface OutboxStats {
+  providers: { email: string; whatsapp: string }
+  by_channel: Record<string, { queued: number; sent: number; failed: number; total: number }>
+}
+
+/* ---------------- §22 warehouse / fulfillment ---------------- */
+
+export interface WarehouseInfo {
+  id: number
+  code: string
+  name: string
+  city: string
+  country: string
+  address: string
+  status: string
+  is_default: boolean
+  org_id: number | null
+  sku_count: number
+  units_on_hand: number
+  open_waves: number
+  created_at: string | null
+}
+
+export interface StockRow {
+  id: number
+  warehouse_id: number
+  warehouse_code: string | null
+  warehouse_name: string | null
+  product_id: number
+  product_title: string | null
+  product_stock: number | null
+  on_hand: number
+  reserved: number
+  available: number
+  updated_at: string | null
+}
+
+export interface StockMovementRow {
+  id: number
+  warehouse_id: number
+  warehouse_code: string | null
+  product_id: number
+  product_title: string | null
+  movement_type: 'receipt' | 'pick' | 'adjustment' | 'transfer_in' | 'transfer_out' | 'return_restock'
+  qty: number
+  balance_after: number
+  reference_type: string
+  reference_id: number | null
+  note: string
+  created_by: number | null
+  created_at: string | null
+}
+
+export interface PickLineRow {
+  id: number
+  order_id: number
+  product_id: number
+  title: string
+  qty: number
+  picked_qty: number
+  status: 'pending' | 'picked' | 'packed'
+}
+
+export interface PickWave {
+  id: number
+  wave_number: string
+  warehouse_id: number
+  warehouse_code: string | null
+  warehouse_name: string | null
+  org_id: number | null
+  status: 'open' | 'picking' | 'packed' | 'completed' | 'cancelled'
+  order_count: number
+  note: string
+  created_by: number | null
+  picked_at: string | null
+  packed_at: string | null
+  completed_at: string | null
+  cancelled_at: string | null
+  created_at: string | null
+  allowed_transitions: string[]
+  lines?: PickLineRow[]
+}
+
+/* ---------------- §14 checkout (public, no auth) ---------------- */
+
+export interface CheckoutQuote {
+  currency: string
+  lines: { product_slug: string; title: string; qty: number; unit_price: number; line_total: number; in_stock: boolean }[]
+  items_total: number
+  delivery_fee: number
+  total: number
+}
+
+export interface CheckoutResult {
+  ok: boolean
+  order_id: number
+  status: string
+  total: number
+  currency: string
+  payment_method: string
+  customer_id: number
+  message: string
+}
+
+export interface PublicOrderStatus {
+  order_id: number
+  status: string
+  payment_method: string
+  payment_status: string
+  total: number
+  currency: string
+  placed_at: string | null
+  items: { title: string; qty: number; unit_price: number }[]
+}
+
 /* ---------------- §43 auth ---------------- */
 
 export interface LoginResponse {
@@ -571,11 +709,11 @@ export interface LoginResponse {
   permissions: string[]
 }
 
-const PUBLIC_PATHS = ['/', '/login', '/lp', '/products']
+const PUBLIC_PATHS = ['/', '/login', '/lp', '/products', '/cart']
 
 function isPublicPath(path: string) {
-  if (path === '/' || path === '/login') return true
-  return PUBLIC_PATHS.some(p => p !== '/' && path.startsWith(`${p}/`))
+  if (path === '/' || path === '/login' || path === '/cart') return true
+  return PUBLIC_PATHS.some(p => p !== '/' && path.startsWith(p))
 }
 
 export function useApi() {
@@ -685,6 +823,13 @@ export function useApi() {
       req<NotificationPreference>('/api/notifications/preferences', { method: 'PUT', body }),
     sendTestNotification: () => req<EcosNotification>('/api/notifications/test', { method: 'POST', body: {} }),
 
+    // ---- §39 Phase 3 outbound channels ----
+    outbox: (params?: { channel?: string; status?: string; limit?: number }) =>
+      req<OutboxRow[]>('/api/notifications/outbox', { params }),
+    outboxStats: () => req<OutboxStats>('/api/notifications/outbox/stats'),
+    processOutbox: () =>
+      req<{ processed: number; sent: number; failed: number; retried: number }>('/api/notifications/outbox/process', { method: 'POST', body: {} }),
+
     // ---- procurement (§21/§22) ----
     reorderSuggestions: (status?: string) =>
       req<ReorderSuggestion[]>('/api/procurement/reorder-suggestions', { params: status ? { status } : {} }),
@@ -700,8 +845,27 @@ export function useApi() {
       req<PurchaseOrder>('/api/procurement', { method: 'POST', body }),
     poAction: (id: number, action: 'submit' | 'confirm' | 'cancel') =>
       req<PurchaseOrder>(`/api/procurement/${id}/${action}`, { method: 'POST', body: {} }),
-    receivePo: (id: number, receipts: Record<number, number>) =>
-      req<PurchaseOrder>(`/api/procurement/${id}/receive`, { method: 'POST', body: { receipts } }),
+    receivePo: (id: number, receipts: Record<number, number>, warehouseId?: number) =>
+      req<PurchaseOrder>(`/api/procurement/${id}/receive`, { method: 'POST', body: { receipts, warehouse_id: warehouseId ?? null } }),
+
+    // ---- warehouse / fulfillment (§22) ----
+    warehouses: () => req<WarehouseInfo[]>('/api/warehouse'),
+    createWarehouse: (body: { name: string; city?: string; country?: string; address?: string; is_default?: boolean }) =>
+      req<WarehouseInfo>('/api/warehouse', { method: 'POST', body }),
+    stockOverview: (params?: { warehouse_id?: number; product_id?: number }) =>
+      req<StockRow[]>('/api/warehouse/overview', { params }),
+    stockMovements: (params?: { warehouse_id?: number; product_id?: number; movement_type?: string; limit?: number }) =>
+      req<StockMovementRow[]>('/api/warehouse/movements', { params }),
+    adjustStock: (body: { warehouse_id: number; product_id: number; delta: number; reason: string }) =>
+      req<{ ok: boolean }>('/api/warehouse/adjust', { method: 'POST', body }),
+    transferStock: (body: { from_warehouse_id: number; to_warehouse_id: number; product_id: number; qty: number }) =>
+      req<{ ok: boolean }>('/api/warehouse/transfer', { method: 'POST', body }),
+    pickWaves: (status?: string) =>
+      req<PickWave[]>('/api/warehouse/waves', { params: status ? { status } : {} }),
+    createPickWave: (body: { order_ids: number[]; warehouse_id?: number; note?: string }) =>
+      req<PickWave>('/api/warehouse/waves', { method: 'POST', body }),
+    waveAction: (id: number, action: 'pick' | 'pack' | 'complete' | 'cancel') =>
+      req<PickWave>(`/api/warehouse/waves/${id}/${action}`, { method: 'POST', body: {} }),
 
     orders: (params?: { status?: string }) => req<Order[]>('/api/orders', { params }),
     order: (id: number) => req<OrderDetail>(`/api/orders/${id}`),
@@ -747,5 +911,22 @@ export function useApi() {
     publicPage: (slug: string) => req<PublicPage>(`/api/public/pages/${slug}`),
     submitOrderIntent: (body: { product_slug: string; contact_name: string; contact_phone: string; qty: number; note?: string; utm?: Record<string, string> }) =>
       req<{ ok: boolean; lead_id: number; message: string }>('/api/public/leads', { method: 'POST', body }),
+
+    // ---- §14 checkout (public, no auth) ----
+    checkoutQuote: (body: { items: { product_slug: string; qty: number }[]; delivery_fee?: number }) =>
+      req<CheckoutQuote>('/api/public/checkout/quote', { method: 'POST', body }),
+    checkout: (body: {
+      items: { product_slug: string; qty: number }[]
+      full_name: string
+      contact_phone: string
+      address: string
+      city: string
+      state: string
+      payment_method: 'cod' | 'online_transfer'
+      note?: string
+      utm?: Record<string, string>
+    }) => req<CheckoutResult>('/api/public/checkout', { method: 'POST', body }),
+    publicOrderStatus: (orderId: number, phone: string) =>
+      req<PublicOrderStatus>(`/api/public/orders/${orderId}`, { params: { phone } }),
   }
 }

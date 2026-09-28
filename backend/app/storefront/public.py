@@ -158,6 +158,187 @@ class PublicLeadIn(BaseModel):
     utm: dict = {}
 
 
+# --------------------------------------------------------------------------
+# §14 completion — public checkout: cart -> direct order (no auth)
+# --------------------------------------------------------------------------
+
+def _resolve_checkout_items(db: Session, items: list[dict]) -> list[dict]:
+    resolved = []
+    for item in items:
+        slug = str(item.get("product_slug") or "").strip()
+        qty = int(item.get("qty") or 0)
+        if qty < 1:
+            raise HTTPException(400, "Each item needs qty >= 1")
+        product = db.query(cm.Product).filter(
+            cm.Product.slug == slug, cm.Product.status == "active"
+        ).first()
+        if product is None:
+            raise HTTPException(404, f"Product not found: {slug}")
+        breakdown = price_product(
+            supplier_cost=product.supplier_cost, currency=product.currency,
+            weight_kg=product.weight_kg, markup_pct=product.markup_pct,
+        )
+        resolved.append({
+            "product": product, "qty": qty,
+            "unit_price": breakdown.ecos_price_ngn,
+            "line_total": breakdown.ecos_price_ngn * qty,
+        })
+    if not resolved:
+        raise HTTPException(400, "Cart is empty")
+    return resolved
+
+
+class CheckoutItemIn(BaseModel):
+    product_slug: str
+    qty: int = Field(ge=1, le=99)
+
+
+class QuoteIn(BaseModel):
+    items: list[CheckoutItemIn]
+    delivery_fee: float = Field(default=0.0, ge=0)
+
+
+@public_router.post("/checkout/quote")
+def checkout_quote(payload: QuoteIn, db: Session = Depends(get_db)):
+    """Price a cart (server-side waterfall) before placing the order."""
+    lines = _resolve_checkout_items(db, [i.model_dump() for i in payload.items])
+    items_total = sum(l["line_total"] for l in lines)
+    return {
+        "currency": "NGN",
+        "lines": [
+            {
+                "product_slug": l["product"].slug,
+                "title": l["product"].title,
+                "qty": l["qty"],
+                "unit_price": l["unit_price"],
+                "line_total": l["line_total"],
+                "in_stock": l["product"].stock >= l["qty"],
+            }
+            for l in lines
+        ],
+        "items_total": items_total,
+        "delivery_fee": payload.delivery_fee,
+        "total": items_total + payload.delivery_fee,
+    }
+
+
+class CheckoutIn(BaseModel):
+    items: list[CheckoutItemIn]
+    full_name: str = Field(min_length=2, max_length=255)
+    contact_phone: str = Field(min_length=7, max_length=50)
+    address: str = Field(min_length=4, max_length=1024)
+    city: str = Field(max_length=100)
+    state: str = Field(max_length=100)
+    payment_method: str = "cod"  # cod | online_transfer
+    note: str = ""
+    utm: dict = {}
+
+
+@public_router.post("/checkout", status_code=201)
+def checkout(payload: CheckoutIn, db: Session = Depends(get_db)):
+    """Cart -> direct order (§14 completion).
+
+    Creates (or reuses, phone-matched) the customer, prices every line
+    through the pricing engine, creates a real order + payment record, and
+    notifies the operator org. COD stays the default corridor method.
+    """
+    from app.orders import service as order_service
+
+    store = _active_store(db)
+    if not store:
+        raise HTTPException(404, "No active storefront yet")
+    if payload.payment_method not in ("cod", "online_transfer"):
+        raise HTTPException(400, "payment_method must be cod or online_transfer")
+
+    lines = _resolve_checkout_items(db, [i.model_dump() for i in payload.items])
+    for l in lines:
+        if l["product"].stock < l["qty"]:
+            raise HTTPException(
+                409, f"Insufficient stock for {l['product'].title} — only "
+                f"{l['product'].stock} left"
+            )
+
+    # find-or-create the customer by phone within this store (§18)
+    phone = payload.contact_phone.strip()
+    customer = (
+        db.query(crm_m.Customer)
+        .filter(crm_m.Customer.store_id == store.id, crm_m.Customer.phone == phone)
+        .first()
+    )
+    if customer is None:
+        customer = crm_m.Customer(
+            store_id=store.id, full_name=payload.full_name.strip(),
+            phone=phone, address=payload.address.strip(),
+            city=payload.city.strip(), state=payload.state.strip(),
+            country=store.country,
+        )
+        db.add(customer)
+        db.flush()
+
+    try:
+        order = order_service.create_cart_order(
+            db, store_id=store.id, customer_id=customer.id,
+            items=[{"product_id": l["product"].id, "qty": l["qty"]} for l in lines],
+            payment_method=payload.payment_method, delivery_fee=0.0,
+            source="storefront_checkout",
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc))
+
+    utm = attribution.normalize_utm(payload.utm)
+
+    publish(db, "storefront.checkout_completed", {
+        "order_id": order.id, "store_id": store.id, "customer_id": customer.id,
+        "line_count": len(lines), "total_ngn": order.total,
+        "payment_method": payload.payment_method, "utm": utm,
+        "note": (payload.note or "")[:300],
+    })
+    db.commit()
+
+    return {
+        "ok": True,
+        "order_id": order.id,
+        "status": order.status,
+        "total": order.total,
+        "currency": "NGN",
+        "payment_method": payload.payment_method,
+        "customer_id": customer.id,
+        "message": (
+            "Order placed! Pay on delivery — our agent will call to confirm."
+            if payload.payment_method == "cod"
+            else "Order placed! Check your email for transfer instructions."
+        ),
+    }
+
+
+@public_router.get("/orders/{order_id}")
+def public_order_status(order_id: int, phone: str, db: Session = Depends(get_db)):
+    """Customer order tracking — guarded by the checkout phone number."""
+    from app.orders import models as om
+
+    order = db.get(om.Order, order_id)
+    if not order:
+        raise HTTPException(404, "Order not found")
+    customer = db.query(crm_m.Customer).filter(crm_m.Customer.id == order.customer_id).first()
+    if not customer or customer.phone.strip() != phone.strip():
+        raise HTTPException(403, "Phone does not match this order")
+    items = db.query(om.OrderItem).filter(om.OrderItem.order_id == order.id).all()
+    return {
+        "order_id": order.id,
+        "status": order.status,
+        "payment_method": order.payment_method,
+        "payment_status": order.payment_status,
+        "total": order.total,
+        "currency": order.currency,
+        "placed_at": order.created_at.isoformat() if order.created_at else None,
+        "items": [
+            {"title": i.title, "qty": i.qty, "unit_price": i.unit_price}
+            for i in items
+        ],
+    }
+
+
 @public_router.post("/leads", status_code=201)
 def submit_order_intent(payload: PublicLeadIn, db: Session = Depends(get_db)):
     """COD order intent from the storefront -> CRM lead (§14 -> §17)."""

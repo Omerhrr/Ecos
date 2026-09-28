@@ -36,6 +36,7 @@ class User(Base):
     org_id: Mapped[int] = mapped_column(Integer, index=True)
     name: Mapped[str] = mapped_column(String(255))
     email: Mapped[str] = mapped_column(String(255), unique=True)
+    phone: Mapped[str | None] = mapped_column(String(50), nullable=True)  # WhatsApp target for §39 outbound
     role: Mapped[str] = mapped_column(String(50), default="agent")
     password_hash: Mapped[str] = mapped_column(String(255), default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

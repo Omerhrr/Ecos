@@ -22,6 +22,7 @@ class UserIn(BaseModel):
     name: str
     email: str
     password: str
+    phone: str | None = None
     role: str = "agent"
     org_id: int | None = None  # only honored for platform staff
 
@@ -29,7 +30,7 @@ class UserIn(BaseModel):
 def user_dict(u: m.User) -> dict:
     return {
         "id": u.id, "org_id": u.org_id, "name": u.name,
-        "email": u.email, "role": u.role, "is_active": u.is_active,
+        "email": u.email, "phone": u.phone, "role": u.role, "is_active": u.is_active,
     }
 
 
@@ -70,6 +71,7 @@ def create_user(
     org_id = payload.org_id if (ctx.is_platform and payload.org_id) else ctx.user.org_id
     user = m.User(
         org_id=org_id, name=payload.name.strip(), email=email,
+        phone=(payload.phone or None),
         role=payload.role, password_hash=hash_password(payload.password),
     )
     db.add(user)

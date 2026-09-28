@@ -22,6 +22,7 @@ from app.catalog import models as cm
 from app.core import events
 from app.procurement import models as m
 from app.supply import models as sm
+from app.warehouse import models as warehouse_m
 
 
 def _now() -> datetime:
@@ -294,13 +295,28 @@ def cancel_po(db: Session, po: m.PurchaseOrder) -> m.PurchaseOrder:
 
 
 def receive_po(
-    db: Session, po: m.PurchaseOrder, receipts: dict[int, int]
+    db: Session, po: m.PurchaseOrder, receipts: dict[int, int], *,
+    warehouse_id: int | None = None, received_by: int | None = None,
 ) -> m.PurchaseOrder:
-    """Post a goods receipt: {line_id: qty}. Full coverage flips the PO to received."""
+    """Post a goods receipt: {line_id: qty}. Full coverage flips the PO to received.
+
+    Units are put away into a warehouse (§22): the default receiving
+    warehouse unless one is named. Every line produces a `receipt` stock
+    movement, and network-level product.stock rises for the sellable pool.
+    """
+    from app.warehouse import service as warehouse_service
+
     if po.status not in m.RECEIVABLE_STATUSES:
         raise ValueError(f"Goods receipt requires a confirmed PO (this one is {po.status})")
     if not receipts:
         raise ValueError("Nothing to receive")
+
+    warehouse = warehouse_service.ensure_default_warehouse(db, warehouse_id if warehouse_id else po.org_id)
+    if warehouse_id:
+        target = db.get(warehouse_m.Warehouse, warehouse_id)
+        if target is None:
+            raise ValueError(f"Warehouse {warehouse_id} not found")
+        warehouse = target
 
     lines = {
         l.id: l
@@ -323,6 +339,11 @@ def receive_po(
         product = db.get(cm.Product, line.product_id)
         if product is not None:
             product.stock += qty
+            warehouse_service.receive_stock(
+                db, warehouse=warehouse, product=product, qty=qty,
+                reference_type="purchase_order", reference_id=po.id,
+                note=f"Goods receipt {po.po_number}", created_by=received_by,
+            )
 
     db.flush()
 

@@ -16,6 +16,13 @@ const filter = ref<string>('')
 const showRead = ref(true)
 const error = ref('')
 
+// §39 Phase 3 — outbound channel workers (email / WhatsApp outbox)
+const outboxRows = ref<OutboxRow[]>([])
+const outboxInfo = ref<OutboxStats | null>(null)
+const outboxChannel = ref<'' | 'email' | 'whatsapp'>('')
+const outboxStatus = ref<'' | 'queued' | 'sent' | 'failed'>('')
+const processing = ref(false)
+
 const CATEGORIES = ['orders', 'payments', 'shipments', 'returns', 'settlements', 'ai', 'procurement', 'leads', 'system']
 
 const LEVEL_DOT: Record<string, string> = {
@@ -48,7 +55,20 @@ async function load() {
   }
   finally { loading.value = false }
 }
-onMounted(load)
+
+async function loadOutbox() {
+  const params: Record<string, unknown> = { limit: 50 }
+  if (outboxChannel.value) params.channel = outboxChannel.value
+  if (outboxStatus.value) params.status = outboxStatus.value
+  const [rows, stats] = await Promise.all([
+    api.outbox(params),
+    api.outboxStats(),
+  ])
+  outboxRows.value = rows
+  outboxInfo.value = stats
+}
+
+onMounted(() => { load(); loadOutbox() })
 
 async function markRead(n: EcosNotification) {
   if (n.read) return
@@ -73,6 +93,20 @@ async function togglePref(p: NotificationPreference, key: 'in_app' | 'email' | '
   const updated = await api.updateNotificationPreference({ category: p.category, [key]: !p[key] })
   Object.assign(p, updated)
 }
+
+async function runWorkers() {
+  processing.value = true
+  try {
+    const r = await api.processOutbox()
+    await loadOutbox()
+    if (r.processed) { error.value = ''; flash.value = `Workers processed ${r.processed} message(s): ${r.sent} sent, ${r.failed} failed, ${r.retried} retried` }
+  }
+  finally { processing.value = false }
+}
+
+const flash = ref('')
+const obStatusColor: Record<string, string> = { queued: '#eab308', sent: '#00b374', failed: '#f87171', skipped: '#94a3b8' }
+const filteredOutbox = computed(() => outboxRows.value)
 </script>
 
 <template>
@@ -80,13 +114,15 @@ async function togglePref(p: NotificationPreference, key: 'in_app' | 'email' | '
     <div class="page-head">
       <div>
         <h1>Notifications</h1>
-        <div class="sub">plan §39 — domain events fan out here per user; preferences mute categories at the dispatcher, not just in the UI</div>
+        <div class="sub">plan §39 — events fan out per user; Phase 3 workers deliver email / WhatsApp from the outbox</div>
       </div>
       <div class="row" style="gap:.5rem">
         <button class="ghost" @click="sendTest">Send test</button>
         <button :disabled="!unread" @click="readAll">Mark all read{{ unread ? ` (${unread})` : '' }}</button>
       </div>
     </div>
+
+    <div v-if="flash" class="flash-ok">{{ flash }}</div>
 
     <div class="grid2">
       <div>
@@ -127,7 +163,7 @@ async function togglePref(p: NotificationPreference, key: 'in_app' | 'email' | '
       <div class="card pad">
         <h3 style="margin-bottom:.2rem">Channel preferences</h3>
         <div class="muted" style="font-size:.76rem;margin-bottom:.8rem">
-          In-app is live today. Email and WhatsApp switches are wired into the dispatcher for the Phase 3 outbound workers — flipping them now records intent.
+          Flipping <b>Email</b> / <b>WhatsApp</b> on queues real outbound messages to the outbox below — the workers deliver them (dev-console provider logs to the API stdout when no SMTP/Cloud credentials are set).
         </div>
         <table>
           <thead><tr><th>Category</th><th>In-app</th><th>Email</th><th>WhatsApp</th></tr></thead>
@@ -141,9 +177,56 @@ async function togglePref(p: NotificationPreference, key: 'in_app' | 'email' | '
           </tbody>
         </table>
         <div class="muted" style="font-size:.76rem;margin-top:.8rem">
-          Click any notification to mark it read. The <b>Send test</b> button drops a row into your own feed.
+          WhatsApp delivery needs a phone number on your user record; email uses your login email.
         </div>
       </div>
+    </div>
+
+    <!-- §39 Phase 3 — outbound workers -->
+    <div class="card pad" style="margin-top:1rem">
+      <div class="row" style="justify-content:space-between;align-items:flex-start;margin-bottom:.6rem">
+        <div>
+          <h3 style="margin:0">Outbound channels · email / WhatsApp workers</h3>
+          <div class="muted" style="font-size:.76rem">
+            Providers: <b>{{ outboxInfo?.providers.email || '…' }}</b> (email) · <b>{{ outboxInfo?.providers.whatsapp || '…' }}</b> (WhatsApp) — background worker ticks every 30s, or run it now.
+          </div>
+        </div>
+        <button :disabled="processing" @click="runWorkers">{{ processing ? 'Running…' : 'Run workers now' }}</button>
+      </div>
+
+      <div class="row" style="gap:.4rem;flex-wrap:wrap;margin-bottom:.7rem">
+        <button v-for="(s, ch) in outboxInfo?.by_channel || {}" :key="ch"
+                class="chip" :class="{ on: outboxChannel === ch }" @click="outboxChannel = outboxChannel === ch ? '' : (ch as any)">
+          {{ ch }} · {{ s.sent }}/{{ s.total }} sent
+        </button>
+        <span class="spacer" />
+        <button class="chip" :class="{ on: outboxStatus === 'queued' }" @click="outboxStatus = outboxStatus === 'queued' ? '' : 'queued'">queued</button>
+        <button class="chip" :class="{ on: outboxStatus === 'sent' }" @click="outboxStatus = outboxStatus === 'sent' ? '' : 'sent'">sent</button>
+        <button class="chip" :class="{ on: outboxStatus === 'failed' }" @click="outboxStatus = outboxStatus === 'failed' ? '' : 'failed'">failed</button>
+        <button class="chip" @click="loadOutbox">↻</button>
+      </div>
+
+      <table>
+        <thead><tr><th>When</th><th>Channel</th><th>Recipient</th><th>Message</th><th>Status</th><th>Attempts</th><th>Provider ref</th></tr></thead>
+        <tbody>
+          <tr v-for="r in filteredOutbox" :key="r.id">
+            <td class="muted">{{ date(r.created_at || '') }}</td>
+            <td><span class="ch-badge" :class="r.channel">{{ r.channel }}</span></td>
+            <td class="mono" style="font-size:.75rem">{{ r.recipient }}</td>
+            <td style="max-width:340px">
+              <div style="font-size:.8rem;font-weight:600">{{ r.subject }}</div>
+              <div class="muted" style="font-size:.72rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.body }}</div>
+              <div v-if="r.last_error" style="font-size:.7rem;color:#fca5a5">{{ r.last_error }}</div>
+            </td>
+            <td><StatusBadge :status="r.status" :color="obStatusColor[r.status]" /></td>
+            <td class="muted">{{ r.attempts }}/{{ r.max_attempts }}</td>
+            <td class="muted mono" style="font-size:.72rem">{{ r.provider_ref || '—' }}</td>
+          </tr>
+          <tr v-if="!filteredOutbox.length">
+            <td colspan="7" class="muted">Outbox is empty — flip Email/WhatsApp on for a category and the next notification will queue here.</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </div>
 </template>
@@ -171,4 +254,10 @@ async function togglePref(p: NotificationPreference, key: 'in_app' | 'email' | '
 .chip b { color: #38bdf8; }
 input[type='checkbox'] { accent-color: #38bdf8; width: 15px; height: 15px; cursor: pointer; }
 table td, table th { padding: .4rem .5rem; }
+.flash-ok { background: rgba(0,179,116,.12); border: 1px solid rgba(0,179,116,.4); color: #4ade80; padding: .5rem .8rem; border-radius: 8px; margin-bottom: .8rem; font-size: .85rem; }
+.spacer { flex: 1; }
+.ch-badge { font-size: .7rem; font-weight: 700; padding: .15rem .5rem; border-radius: 99px; text-transform: uppercase; }
+.ch-badge.email { background: rgba(56,189,248,.15); color: #7dd3fc; }
+.ch-badge.whatsapp { background: rgba(0,179,116,.15); color: #4ade80; }
+.mono { font-family: ui-monospace, monospace; }
 </style>

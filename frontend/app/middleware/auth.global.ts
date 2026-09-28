@@ -11,8 +11,9 @@ export default defineNuxtRouteMiddleware((to) => {
   const PUBLIC = (path: string) =>
     path === '/'
     || path === '/login'
-    || path.startsWith('/lp/')
-    || path.startsWith('/products/')
+    || path === '/cart'
+    || path.startsWith('/lp')
+    || path.startsWith('/products')
 
   if (PUBLIC(to.path)) return
 

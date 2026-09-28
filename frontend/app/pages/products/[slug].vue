@@ -15,6 +15,15 @@ const loading = ref(true)
 const notFound = ref(false)
 const imgBroken = ref(false)
 const activeImg = ref(0)
+const cart = useCart()
+const addedToCart = ref(false)
+
+function addToCart() {
+  if (!product.value) return
+  cart.add({ ...product.value }, 1)
+  addedToCart.value = true
+  setTimeout(() => (addedToCart.value = false), 1800)
+}
 
 const form = reactive({ name: '', phone: '', qty: 1 })
 const submitting = ref(false)
@@ -100,6 +109,14 @@ async function submitIntent() {
         <h1>{{ product.title }}</h1>
         <div class="pdp-price">{{ money(product.price_ngn) }}</div>
         <div class="pdp-cod-badge">💵 Pay on delivery — nationwide</div>
+
+        <!-- §14 completion: instant cart path -->
+        <div v-if="product.in_stock" class="pdp-cart-row">
+          <button class="pub-btn lg" @click="addToCart">
+            {{ addedToCart ? 'Added ✓' : 'Add to cart' }}
+          </button>
+          <NuxtLink to="/cart" class="pdp-cart-link">Go to cart →</NuxtLink>
+        </div>
         <p class="pdp-desc">{{ product.description }}</p>
 
         <div v-if="Object.keys(product.specs).length" class="pdp-specs">

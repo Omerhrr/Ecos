@@ -30,6 +30,7 @@ READ_PERMISSIONS = [
     "returns:read",
     "ai_harness:read",
     "procurement:read",
+    "warehouse:read",
     "analytics:read",
 ]
 
@@ -48,13 +49,14 @@ ALL_PERMISSIONS = READ_PERMISSIONS + [
     "ai_harness:write",
     "ai_harness:approve",
     "procurement:write",
+    "warehouse:write",
     "identity:manage",
 ]
 
 _ROLE_OPS_WRITE = [
     "catalog:write", "orders:write", "logistics:write",
     "crm:write", "storefront:write", "landing_pages:write",
-    "marketing:write", "returns:write",
+    "marketing:write", "returns:write", "warehouse:write",
 ]
 
 ROLE_PERMISSIONS: dict[str, list[str]] = {
@@ -67,6 +69,7 @@ ROLE_PERMISSIONS: dict[str, list[str]] = {
         "crm:read", "crm:write", "storefront:read",
         "landing_pages:read", "marketing:read",
         "returns:read", "returns:write", "analytics:read",
+        "warehouse:read",
     ],
     "viewer": list(READ_PERMISSIONS),
 }

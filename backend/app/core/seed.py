@@ -73,16 +73,28 @@ def seed_if_empty(db: Session) -> bool:
 
     owner = im.User(
         org_id=operator.id, name="Kara Owner", email="owner@kara.example", role="owner",
+        phone="+234 803 555 0900",
         password_hash=sec.hash_password(DEMO_PASSWORD),
     )
     db.add_all([
         im.User(org_id=luxeen.id, name="Luxeen Ops", email="ops@luxeen.example", role="luxeen_admin",
+                phone="+234 803 555 0901",
                 password_hash=sec.hash_password(DEMO_PASSWORD)),
         owner,
         im.User(org_id=operator.id, name="Bisi Agent", email="bisi@kara.example", role="agent",
+                phone="+234 806 555 0902",
                 password_hash=sec.hash_password(DEMO_PASSWORD)),
     ])
     db.flush()
+
+    # --- §39 Phase 3: the owner is opted in to outbound email + WhatsApp on
+    # order/shipment news, so the channel workers have a real story to deliver ---
+    from app.notifications import service as notif_service
+
+    for pref in notif_service.ensure_preferences(db, owner.id):
+        if pref.category in ("orders", "shipments"):
+            pref.email = True
+            pref.whatsapp = True
 
     # --- Supply network (§8) ---
     suppliers = [
@@ -115,6 +127,23 @@ def seed_if_empty(db: Session) -> bool:
     store = stm.Store(org_id=operator.id, name="Kara NG Store", slug="kara-ng", country="NG", currency="NGN")
     db.add(store)
     db.flush()
+
+    # --- Warehouse (§22): the default receiving location + opening balances.
+    # Every unit of seed stock enters as a `receipt` movement so the stock
+    # ledger starts explainable from day zero. ---
+    from app.warehouse import service as warehouse_service
+
+    main_wh = warehouse_service.create_warehouse(
+        db, name="Kara Main Warehouse", org_id=operator.id, city="Lagos",
+        country="NG", address="24 Oshodi-Apapa Expressway, Ilasamaja", is_default=True,
+    )
+    for p in products:
+        if p.stock > 0:
+            warehouse_service.receive_stock(
+                db, warehouse=main_wh, product=p, qty=p.stock,
+                reference_type="seed", note="Opening balance",
+                created_by=owner.id,
+            )
 
     # --- Marketing campaigns (§16) — attribution keys the storefront carries ---
     campaigns = [

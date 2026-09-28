@@ -35,6 +35,7 @@ class PoIn(BaseModel):
 
 class ReceiptIn(BaseModel):
     receipts: dict[int, int]  # line_id -> qty
+    warehouse_id: int | None = None  # §22 putaway target (default warehouse if omitted)
 
 
 class FromSuggestionsIn(BaseModel):
@@ -154,12 +155,12 @@ def confirm_po(po_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{po_id}/receive", dependencies=[Depends(require_perm("procurement:write"))])
-def receive_po(po_id: int, payload: ReceiptIn, db: Session = Depends(get_db)):
+def receive_po(po_id: int, payload: ReceiptIn, db: Session = Depends(get_db), ctx: AuthContext = Depends(require_auth)):
     po = db.get(m.PurchaseOrder, po_id)
     if not po:
         raise HTTPException(404, "Purchase order not found")
     try:
-        svc.receive_po(db, po, payload.receipts)
+        svc.receive_po(db, po, payload.receipts, warehouse_id=payload.warehouse_id, received_by=ctx.user.id)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     db.commit()

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.identity import models as im
 from app.notifications import models as m
+from app.notifications import outbound
 
 
 def _active_users(db: Session, org_id: int) -> list[im.User]:
@@ -24,6 +25,27 @@ def _active_users(db: Session, org_id: int) -> list[im.User]:
         .filter(im.User.org_id == org_id, im.User.is_active.is_(True))
         .all()
     )
+
+
+def _enqueue_channels(
+    db: Session, *, user: im.User, pref: m.NotificationPreference | None,
+    category: str, title: str, body: str, org_id: int | None,
+    notification_id: int | None,
+) -> None:
+    """§39 Phase 3 — queue email/WhatsApp deliveries for opted-in users."""
+    if pref is None:
+        return
+    targets: list[tuple[str, str]] = []
+    if pref.email and user.email:
+        targets.append(("email", user.email))
+    if pref.whatsapp and user.phone:
+        targets.append(("whatsapp", user.phone))
+    for channel, recipient in targets:
+        outbound.enqueue(
+            db, user_id=user.id, org_id=org_id, channel=channel,
+            recipient=recipient, category=category, subject=title,
+            body=body, notification_id=notification_id,
+        )
 
 
 def notify(
@@ -64,9 +86,12 @@ def notify(
             entity_type=entity_type, entity_id=entity_id, meta=meta or {},
         )
         db.add(row)
-        created.append(row)
-    if created:
         db.flush()
+        created.append(row)
+        _enqueue_channels(
+            db, user=user, pref=pref, category=category, title=title,
+            body=body or "", org_id=org_id, notification_id=row.id,
+        )
     return created
 
 
@@ -82,6 +107,7 @@ def notify_user(
     entity_type: str = "",
     entity_id: int | None = None,
     meta: dict[str, Any] | None = None,
+    channels: bool = True,
 ) -> m.Notification:
     """Direct-to-user notification (bypasses org fan-out)."""
     row = m.Notification(
@@ -92,6 +118,21 @@ def notify_user(
     )
     db.add(row)
     db.flush()
+    if channels:
+        user = db.get(im.User, user_id)
+        pref = (
+            db.query(m.NotificationPreference)
+            .filter(
+                m.NotificationPreference.user_id == user_id,
+                m.NotificationPreference.category == category,
+            )
+            .first()
+        )
+        if user is not None:
+            _enqueue_channels(
+                db, user=user, pref=pref, category=category, title=title,
+                body=body or "", org_id=org_id, notification_id=row.id,
+            )
     return row
 
 

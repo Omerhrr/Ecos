@@ -38,6 +38,7 @@ onMounted(async () => {
         <NuxtLink to="/logistics">Logistics</NuxtLink>
         <NuxtLink to="/returns">Returns · RMA</NuxtLink>
         <NuxtLink to="/procurement">Procurement · POs</NuxtLink>
+        <NuxtLink to="/warehouse">Warehouse · Fulfillment</NuxtLink>
         <NuxtLink to="/settlements">Settlements</NuxtLink>
         <NuxtLink to="/finance">Finance · Ledger</NuxtLink>
         <NuxtLink to="/marketing">Marketing · Attribution</NuxtLink>

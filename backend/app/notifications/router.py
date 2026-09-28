@@ -128,3 +128,48 @@ def send_test(db: Session = Depends(get_db), ctx: AuthContext = Depends(require_
     )
     db.commit()
     return svc.serialize(n)
+
+
+# --------------------------------------------------------------------------
+# §39 Phase 3 — outbound channel outbox (email / WhatsApp workers)
+# --------------------------------------------------------------------------
+
+@router.get("/outbox")
+def list_outbox(
+    channel: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    ctx: AuthContext = Depends(require_auth),
+):
+    q = db.query(m.NotificationOutbox).order_by(m.NotificationOutbox.id.desc())
+    if ctx.user.role != "luxeen_admin":
+        q = q.filter(m.NotificationOutbox.org_id == ctx.user.org_id)
+    if channel:
+        q = q.filter(m.NotificationOutbox.channel == channel)
+    if status:
+        q = q.filter(m.NotificationOutbox.status == status)
+    from app.notifications import outbound
+
+    return [outbound.serialize_outbox(r) for r in q.limit(min(limit, 200)).all()]
+
+
+@router.get("/outbox/stats")
+def outbox_stats(db: Session = Depends(get_db), ctx: AuthContext = Depends(require_auth)):
+    from app.notifications import outbound
+
+    return outbound.outbox_stats(db)
+
+
+@router.post("/outbox/process")
+def process_outbox_endpoint(
+    limit: int = 25,
+    db: Session = Depends(get_db),
+    ctx: AuthContext = Depends(require_auth),
+):
+    """Manually tick the channel workers (the background loop ticks too)."""
+    from app.notifications import outbound
+
+    result = outbound.process_outbox(db, limit=limit)
+    db.commit()
+    return result

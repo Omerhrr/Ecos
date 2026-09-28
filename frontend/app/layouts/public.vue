@@ -1,14 +1,16 @@
 <script setup lang="ts">
 /**
  * Public layout — customer-facing storefront chrome (plan §14).
- * No sidebar; light header with the active store name and minimal nav.
+ * No sidebar; light header with the active store name, nav and cart badge.
  */
 const api = useApi()
 const store = useAuth().token // just to react to login state changes
 const storeName = useState<string>('pub-store-name', () => '')
 const mounted = ref(false)
+const cart = useCart()
 
 onMounted(async () => {
+  cart.load()
   mounted.value = true
   if (!storeName.value) {
     try {
@@ -33,6 +35,10 @@ onMounted(async () => {
         <nav class="pub-nav">
           <NuxtLink to="/">Home</NuxtLink>
           <NuxtLink to="/products">Products</NuxtLink>
+          <NuxtLink to="/cart" class="pub-cart-link">
+            Cart
+            <span v-if="mounted && cart.count.value" class="pub-cart-badge">{{ cart.count.value > 99 ? '99+' : cart.count.value }}</span>
+          </NuxtLink>
         </nav>
         <div class="pub-auth">
           <template v-if="mounted && store">

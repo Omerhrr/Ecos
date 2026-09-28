@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 _ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(_ROOT_ENV)
 
+import traceback  # noqa: E402
 from contextlib import asynccontextmanager  # noqa: E402
 
 from fastapi import Depends, FastAPI  # noqa: E402
@@ -32,6 +33,7 @@ from app.settlements import models as settlements_models  # noqa: F401,E402
 from app.ai_harness import models as ai_models  # noqa: F401,E402
 from app.notifications import models as notifications_models  # noqa: F401,E402
 from app.procurement import models as procurement_models  # noqa: F401,E402
+from app.warehouse import models as warehouse_models  # noqa: F401,E402
 
 from app.core.seed import seed_if_empty  # noqa: E402
 from app.core.deps import require_auth  # noqa: E402
@@ -54,6 +56,7 @@ from app.settlements.router import router as settlements_router  # noqa: E402
 from app.ai_harness.router import router as ai_router  # noqa: E402
 from app.notifications.router import router as notifications_router  # noqa: E402
 from app.procurement.router import router as procurement_router  # noqa: E402
+from app.warehouse.router import router as warehouse_router  # noqa: E402
 from app.analytics.router import router as analytics_router  # noqa: E402
 from app.core.models import DomainEvent  # noqa: E402
 
@@ -88,7 +91,29 @@ async def lifespan(app: FastAPI):
     _run_migrations()
     with SessionLocal() as db:
         seed_if_empty(db)
+
+    # §39 Phase 3 — background outbound worker: drains the notification
+    # outbox (email / WhatsApp) every 30s, independent of request traffic.
+    import asyncio
+
+    from app.core.database import SessionLocal as _SL
+    from app.notifications import outbound as _outbound
+
+    async def _outbound_worker() -> None:
+        while True:
+            await asyncio.sleep(30)
+            try:
+                with _SL() as db:
+                    result = _outbound.process_outbox(db, limit=25)
+                    if result["processed"]:
+                        db.commit()
+                        print(f"[outbound worker] {result}")
+            except Exception:  # noqa: BLE001 — the worker must survive anything
+                print("[outbound worker] tick failed:\n" + traceback.format_exc())
+
+    task = asyncio.create_task(_outbound_worker())
     yield
+    task.cancel()
 
 
 app = FastAPI(
@@ -114,7 +139,7 @@ for r in [
     public_router, crm_router, customers_router, orders_router, logistics_router,
     payments_router, finance_router, landing_pages_router, marketing_router,
     returns_router, settlements_router, ai_router, notifications_router,
-    procurement_router, analytics_router,
+    procurement_router, warehouse_router, analytics_router,
 ]:
     app.include_router(r, prefix="/api")
 

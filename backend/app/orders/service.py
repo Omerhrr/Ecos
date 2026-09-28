@@ -78,6 +78,81 @@ def create_order(
     return {"id": order.id, "status": order.status, "total": order.total}
 
 
+def create_cart_order(
+    db: Session,
+    *,
+    store_id: int,
+    customer_id: int,
+    items: list[dict],
+    payment_method: str = "cod",
+    delivery_fee: float = 0.0,
+    lead_id: int | None = None,
+    source: str = "checkout",
+) -> m.Order:
+    """Multi-line order creation (plan §14 checkout completion).
+
+    `items` is [{product_id, qty}]. Each line is priced through the same
+    waterfall as single-product orders, costs and weights are snapshotted,
+    one payment record covers the whole cart, and stock is decremented per
+    line. Publishes `order.created` with the full line list.
+    """
+    if not items:
+        raise ValueError("An order needs at least one line")
+    if payment_method not in m.PAYMENT_METHODS:
+        raise ValueError(f"Invalid payment method: {payment_method}")
+
+    resolved: list[tuple[cm.Product, int, float]] = []  # (product, qty, unit_price)
+    for line in items:
+        try:
+            product_id = int(line.get("product_id") or 0)
+            qty = int(line.get("qty") or 0)
+        except (AttributeError, TypeError, ValueError):
+            raise ValueError("Each item needs product_id and qty")
+        if qty < 1:
+            raise ValueError("Item qty must be >= 1")
+        product = db.get(cm.Product, product_id)
+        if product is None:
+            raise ValueError(f"Unknown product {product_id}")
+        if product.stock < qty:
+            raise ValueError(f"Insufficient stock for product {product.id}")
+        breakdown = price_product(
+            supplier_cost=product.supplier_cost, currency=product.currency,
+            weight_kg=product.weight_kg, markup_pct=product.markup_pct,
+        )
+        resolved.append((product, qty, breakdown.ecos_price_ngn))
+
+    items_total = sum(price * qty for _, qty, price in resolved)
+    order = m.Order(
+        store_id=store_id, customer_id=customer_id, lead_id=lead_id,
+        payment_method=payment_method, currency="NGN",
+        items_total=items_total, delivery_fee=delivery_fee,
+        total=items_total + delivery_fee,
+    )
+    db.add(order)
+    db.flush()
+
+    for product, qty, unit_price in resolved:
+        db.add(m.OrderItem(
+            order_id=order.id, product_id=product.id, title=product.title,
+            qty=qty, unit_price=unit_price,
+            supplier_cost_cny=product.supplier_cost, weight_kg=product.weight_kg,
+        ))
+        product.stock -= qty
+
+    db.add(pm.Payment(
+        order_id=order.id, method=payment_method, status="pending",
+        amount=order.total, currency="NGN",
+    ))
+
+    events.publish(db, "order.created", {
+        "order_id": order.id, "store_id": store_id, "customer_id": customer_id,
+        "product_id": resolved[0][0].id, "qty": sum(q for _, q, _ in resolved),
+        "line_count": len(resolved), "total_ngn": order.total,
+        "payment_method": payment_method, "lead_id": lead_id, "source": source,
+    })
+    return order
+
+
 def transition_order(db: Session, order: m.Order, new_status: str, *, actor: str = "system") -> m.Order:
     allowed = m.ORDER_TRANSITIONS.get(order.status, [])
     if new_status not in allowed:

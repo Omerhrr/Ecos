@@ -31,6 +31,7 @@ from app.settlements import models as settlements_models  # noqa: F401
 from app.ai_harness import models as ai_models  # noqa: F401
 from app.notifications import models as notifications_models  # noqa: F401
 from app.procurement import models as procurement_models  # noqa: F401
+from app.warehouse import models as warehouse_models  # noqa: F401
 
 config = context.config
 
