@@ -16,3 +16,9 @@ frontend/dist/
 # Env & misc
 .env
 *.log
+
+# Local databases & runtime
+*.db
+db/
+logs/
+*.sqlite3
