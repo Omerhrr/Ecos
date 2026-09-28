@@ -85,3 +85,21 @@ Stage Summary:
 - Backend: 17 routers, 2 new tables (campaigns, return_orders), returns + marketing domains complete; refund path fully event-driven into ledger.
 - Frontend: 15 admin/public pages; CRM <-> storefront <-> attribution loop verified end-to-end in browser.
 - GitHub push blocked on valid token (user's ghp_... returned 401 Bad credentials) — all work is committed locally and ready to push.
+
+---
+Task ID: 5
+Agent: main (Super Z)
+Task: Push ECOS to github.com/Omerhrr/Ecos using the new token provided by user.
+
+Work Log:
+- User supplied fresh token after previous 401; verified via GitHub API (200, repo Omerhrr/Ecos accessible, repo empty)
+- Pre-push audit: found .env and db/custom.db tracked by earlier checkpoint commits — untracked both (git rm --cached); confirmed .env holds only DATABASE_URL (no secrets); git grep confirmed zero full tokens in tracked files (worklog has redacted refs only)
+- Hardened .gitignore: added *.db, db/, logs/, *.sqlite3
+- Added remote with token embedded in URL (stored only in local .git/config, never committed); pushed main -> origin (new branch, no conflicts)
+- Verified origin/main: 7 commits, 96 files (backend/ frontend/ scripts/ worklog.md); .env + db excluded
+- Post-push smoke test against live servers (uvicorn :8000, nuxt :3000 both healthy): /api/health ok; /api/leads -> 9 leads (sources: storefront, tiktok, whatsapp, meta_ads, organic); /api/marketing/attribution -> campaigns w/ spend+leads+conversion; /api/returns -> RMAs present incl. refunded flow
+
+Stage Summary:
+- ECOS is now on GitHub: https://github.com/Omerhrr/Ecos (branch main)
+- All prior directives confirmed live: CRM board <-> storefront leads, marketing attribution §16, returns module §28
+- Note: token persists in .git/config for future pushes; rotate/revoke if it was shared unintentionally
