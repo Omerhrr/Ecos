@@ -367,3 +367,22 @@ code { background: #eef2f6; border-radius: 4px; padding: .08rem .3rem; font-size
 }
 .cart-done-total { margin: .8rem 0 .4rem; font-size: 1.05rem; }
 .cart-done-actions { margin-top: 1.2rem; display: flex; gap: .6rem; justify-content: center; }
+
+/* ---- §10 catalog depth: PDP variant picker + videos ---- */
+.pdp-variants { display: flex; flex-wrap: wrap; gap: .5rem; margin: .9rem 0; align-items: center; }
+.pdp-variants-label { font-size: .8rem; font-weight: 700; color: #475569; margin-right: .2rem; }
+.pdp-variant-chip {
+  border: 1.5px solid var(--border); background: #fff; border-radius: 10px;
+  padding: .45rem .75rem; cursor: pointer; display: flex; flex-direction: column;
+  align-items: flex-start; gap: .05rem; font-size: .82rem; font-weight: 600;
+  transition: border-color .15s, background .15s;
+}
+.pdp-variant-chip small { font-weight: 500; color: #64748b; font-size: .72rem; }
+.pdp-variant-chip:hover { border-color: var(--accent); }
+.pdp-variant-chip.active { border-color: var(--accent); background: var(--accent-soft); }
+.pdp-variant-chip.disabled { opacity: .45; cursor: not-allowed; }
+.pdp-oos { color: #b91c1c; font-weight: 700; font-size: .9rem; }
+.pdp-videos { margin: 1rem 0; }
+.pdp-videos h3 { font-size: .95rem; margin-bottom: .5rem; }
+.pdp-video { width: 100%; max-width: 420px; border-radius: 12px; background: #000; display: block; margin-bottom: .6rem; aspect-ratio: 16/9; }
+.cart-variant { font-size: .74rem; color: #0f766e; font-weight: 600; }

@@ -29,6 +29,7 @@ class ProductIn(BaseModel):
     markup_pct: float | None = None
     stock: int = 0
     images: list[str] = []
+    videos: list[str] = []  # §10: video media
     specs: dict = {}
 
 
@@ -42,7 +43,31 @@ class ProductPatch(BaseModel):
     status: str | None = None
     stock: int | None = None
     images: list[str] | None = None
+    videos: list[str] | None = None
     specs: dict | None = None
+
+
+class VariantIn(BaseModel):
+    """§10: a buyable face of a product. Cost delta flows through the same
+    §12 waterfall (margin stays derived from supplier truth)."""
+    sku: str = ""                     # blank -> auto-generated
+    option_name: str = ""
+    option_value: str
+    cost_delta: float = 0.0           # in product.currency
+    weight_delta_kg: float = 0.0
+    stock: int = 0
+    image: str | None = None
+
+
+class VariantPatch(BaseModel):
+    sku: str | None = None
+    option_name: str | None = None
+    option_value: str | None = None
+    cost_delta: float | None = None
+    weight_delta_kg: float | None = None
+    stock: int | None = None
+    image: str | None = None
+    status: str | None = None  # active | archived
 
 
 def _slugify(db: Session, title: str) -> str:
@@ -54,12 +79,57 @@ def _slugify(db: Session, title: str) -> str:
     return slug
 
 
+def variant_price(db: Session, p: m.Product, v: m.ProductVariant) -> dict:
+    """Variant face of the §12 waterfall: supplier cost + delta repriced."""
+    base = price_product(
+        supplier_cost=p.supplier_cost, currency=p.currency,
+        weight_kg=p.weight_kg, markup_pct=p.markup_pct,
+    )
+    adj = price_product(
+        supplier_cost=p.supplier_cost + v.cost_delta, currency=p.currency,
+        weight_kg=p.weight_kg + v.weight_delta_kg, markup_pct=p.markup_pct,
+    )
+    return {
+        "unit_price_ngn": adj.ecos_price_ngn,
+        "delta_vs_base_ngn": round(adj.ecos_price_ngn - base.ecos_price_ngn, 2),
+    }
+
+
+def serialize_variant(db: Session, p: m.Product, v: m.ProductVariant) -> dict:
+    pricing = variant_price(db, p, v)
+    return {
+        "id": v.id, "product_id": v.product_id, "sku": v.sku,
+        "option_name": v.option_name, "option_value": v.option_value,
+        "cost_delta": v.cost_delta, "weight_delta_kg": v.weight_delta_kg,
+        "stock": v.stock, "image": v.image, "status": v.status,
+        "label": f"{v.option_name}: {v.option_value}".strip(": ") if v.option_name else v.option_value,
+        "unit_price_ngn": pricing["unit_price_ngn"],
+        "delta_vs_base_ngn": pricing["delta_vs_base_ngn"],
+    }
+
+
+def _next_sku(db: Session, p: m.Product) -> str:
+    n = db.query(m.ProductVariant).filter(m.ProductVariant.product_id == p.id).count() + 1
+    base = f"P{p.id}"
+    sku = f"{base}-{n:02d}"
+    while db.query(m.ProductVariant).filter(m.ProductVariant.sku == sku).first():
+        n += 1
+        sku = f"{base}-{n:02d}"
+    return sku
+
+
 def serialize(db: Session, p: m.Product) -> dict:
     breakdown = price_product(
         supplier_cost=p.supplier_cost, currency=p.currency,
         weight_kg=p.weight_kg, markup_pct=p.markup_pct,
     )
     supplier = db.get(sm.Supplier, p.supplier_id)
+    variants = (
+        db.query(m.ProductVariant)
+        .filter(m.ProductVariant.product_id == p.id, m.ProductVariant.status == "active")
+        .order_by(m.ProductVariant.id)
+        .all()
+    )
     return {
         "id": p.id,
         "slug": p.slug,
@@ -73,14 +143,87 @@ def serialize(db: Session, p: m.Product) -> dict:
         "weight_kg": p.weight_kg, "markup_pct": p.markup_pct,
         "status": p.status, "stock": p.stock,
         "country_of_origin": p.country_of_origin,
-        "images": p.images or [], "specs": p.specs or {},
+        "images": p.images or [], "videos": p.videos or [], "specs": p.specs or {},
         "created_at": p.created_at.isoformat(),
         "pricing": {
             "ecos_price_ngn": breakdown.ecos_price_ngn,
             "fx_rate": breakdown.fx_rate,
             "components": breakdown.components,
         },
+        "variants": [serialize_variant(db, p, v) for v in variants],
     }
+
+
+@router.post("/{product_id}/variants", status_code=201,
+             dependencies=[Depends(require_perm("catalog:write"))])
+def create_variant(product_id: int, payload: VariantIn, db: Session = Depends(get_db)):
+    p = db.get(m.Product, product_id)
+    if not p:
+        raise HTTPException(404, "Product not found")
+    sku = payload.sku.strip() or _next_sku(db, p)
+    if db.query(m.ProductVariant).filter(m.ProductVariant.sku == sku).first():
+        raise HTTPException(400, f"SKU already exists: {sku}")
+    v = m.ProductVariant(
+        product_id=p.id, sku=sku,
+        option_name=payload.option_name.strip(), option_value=payload.option_value.strip(),
+        cost_delta=payload.cost_delta, weight_delta_kg=payload.weight_delta_kg,
+        stock=payload.stock, image=payload.image,
+    )
+    db.add(v)
+    db.flush()
+    publish(db, "product.variant_created", {
+        "product_id": p.id, "variant_id": v.id, "sku": v.sku,
+        "option": f"{v.option_name}:{v.option_value}",
+    })
+    db.commit()
+    return serialize_variant(db, p, v)
+
+
+@router.get("/{product_id}/variants")
+def list_variants(product_id: int, include_archived: bool = False, db: Session = Depends(get_db)):
+    p = db.get(m.Product, product_id)
+    if not p:
+        raise HTTPException(404, "Product not found")
+    q = db.query(m.ProductVariant).filter(m.ProductVariant.product_id == p.id)
+    if not include_archived:
+        q = q.filter(m.ProductVariant.status == "active")
+    return [serialize_variant(db, p, v) for v in q.order_by(m.ProductVariant.id).all()]
+
+
+@router.patch("/variants/{variant_id}", dependencies=[Depends(require_perm("catalog:write"))])
+def patch_variant(variant_id: int, payload: VariantPatch, db: Session = Depends(get_db)):
+    v = db.get(m.ProductVariant, variant_id)
+    if not v:
+        raise HTTPException(404, "Variant not found")
+    p = db.get(m.Product, v.product_id)
+    changes = payload.model_dump(exclude_none=True)
+    if "sku" in changes:
+        sku = changes["sku"].strip()
+        existing = db.query(m.ProductVariant).filter(m.ProductVariant.sku == sku).first()
+        if existing and existing.id != v.id:
+            raise HTTPException(400, f"SKU already exists: {sku}")
+        if not sku:
+            changes.pop("sku")
+        else:
+            changes["sku"] = sku
+    for k, val in changes.items():
+        setattr(v, k, val)
+    publish(db, "product.variant_updated", {"product_id": v.product_id, "variant_id": v.id, "changes": list(changes.keys())})
+    db.commit()
+    return serialize_variant(db, p, v)
+
+
+@router.delete("/variants/{variant_id}", status_code=204,
+               dependencies=[Depends(require_perm("catalog:write"))])
+def archive_variant(variant_id: int, db: Session = Depends(get_db)):
+    """Variants referenced by order history are archived, never hard-deleted."""
+    v = db.get(m.ProductVariant, variant_id)
+    if not v:
+        raise HTTPException(404, "Variant not found")
+    v.status = "archived"
+    publish(db, "product.variant_archived", {"product_id": v.product_id, "variant_id": v.id})
+    db.commit()
+    return None
 
 
 @router.get("")

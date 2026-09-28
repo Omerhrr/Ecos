@@ -35,7 +35,11 @@ async function placeOrder() {
   placeError.value = ''
   try {
     const res = await api.checkout({
-      items: cart.lines.value.map(l => ({ product_slug: l.slug, qty: l.qty })),
+      items: cart.lines.value.map(l => ({
+        product_slug: l.slug,
+        qty: l.qty,
+        variant_id: l.variant_id ?? undefined,
+      })),
       full_name: form.full_name.trim(),
       contact_phone: form.contact_phone.trim(),
       address: form.address.trim(),
@@ -84,29 +88,30 @@ async function placeOrder() {
 
       <div v-else class="cart-layout">
         <div class="cart-lines">
-          <div v-for="l in cart.lines.value" :key="l.slug" class="cart-line">
+          <div v-for="l in cart.lines.value" :key="l.key" class="cart-line">
             <div class="cart-line-img">
               <img v-if="l.image" :src="l.image" :alt="l.title">
               <span v-else>{{ l.title.slice(0, 2).toUpperCase() }}</span>
             </div>
             <div class="cart-line-body">
               <NuxtLink :to="`/products/${l.slug}`" class="cart-line-title">{{ l.title }}</NuxtLink>
+              <div v-if="l.variant_label" class="cart-variant">Option: {{ l.variant_label }}</div>
               <div class="muted">{{ money(l.price_ngn) }} each</div>
               <div class="cart-qty">
-                <button @click="cart.setQty(l.slug, l.qty - 1)">−</button>
+                <button @click="cart.setQty(l.key, l.qty - 1)">−</button>
                 <input
                   :value="l.qty"
                   type="number"
                   min="1"
                   :max="Math.max(l.stock, 1)"
-                  @change="cart.setQty(l.slug, Number(($event.target as HTMLInputElement).value) || 1)"
+                  @change="cart.setQty(l.key, Number(($event.target as HTMLInputElement).value) || 1)"
                 >
-                <button @click="cart.setQty(l.slug, l.qty + 1)">+</button>
+                <button @click="cart.setQty(l.key, l.qty + 1)">+</button>
               </div>
             </div>
             <div class="cart-line-side">
               <div class="cart-line-total">{{ money(l.price_ngn * l.qty) }}</div>
-              <button class="cart-remove" @click="cart.remove(l.slug)">Remove</button>
+              <button class="cart-remove" @click="cart.remove(l.key)">Remove</button>
             </div>
           </div>
         </div>

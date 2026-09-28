@@ -13,6 +13,22 @@ export interface PricingInfo {
   components: Record<string, number>
 }
 
+export interface ProductVariant {
+  id: number
+  product_id: number
+  sku: string
+  option_name: string
+  option_value: string
+  cost_delta: number
+  weight_delta_kg: number
+  stock: number
+  image: string | null
+  status: string
+  label: string
+  unit_price_ngn: number
+  delta_vs_base_ngn: number
+}
+
 export interface Product {
   id: number
   slug: string | null
@@ -31,8 +47,10 @@ export interface Product {
   stock: number
   country_of_origin: string
   images: string[]
+  videos: string[]
   specs: Record<string, unknown>
   pricing: PricingInfo
+  variants: ProductVariant[]
 }
 
 export interface Supplier {
@@ -481,6 +499,8 @@ export interface BlockFieldDef {
 export interface BlockTypeDef {
   type: string
   label: string
+  icon?: string
+  accent?: string
   fields: BlockFieldDef[]
 }
 
@@ -499,12 +519,64 @@ export interface LandingPageSummary {
   block_count: number
   updated_at: string | null
   published_at: string | null
+  scheduled_at?: string | null
 }
 
 export interface LandingPage extends LandingPageSummary {
   blocks: LandingPageBlock[]
   theme: { primary?: string }
   seo: { title?: string; description?: string; og_image?: string }
+}
+
+export interface LpVersion {
+  id: number | null
+  page_id: number
+  version_no: number | 'live'
+  block_count: number
+  published_by: number | null
+  published_at: string | null
+  note: string
+  is_current?: boolean
+}
+
+/* ---------------- §24 COD remittance register ---------------- */
+
+export interface CodRegisterLine {
+  id: number
+  payment_id: number
+  order_id: number
+  order_number: string
+  shipment_id: number | null
+  expected_amount: number
+  counted_amount: number
+  collected_at: string | null
+}
+
+export interface CodRegister {
+  id: number
+  register_code: string
+  org_id: number
+  carrier: string
+  status: 'draft' | 'remitted' | 'reconciled' | 'cancelled'
+  currency: string
+  expected_amount: number
+  remitted_amount: number
+  counted_amount: number
+  variance_amount: number
+  reference: string
+  note: string
+  line_count: number
+  created_at: string | null
+  remitted_at: string | null
+  reconciled_at: string | null
+  lines?: CodRegisterLine[]
+}
+
+export interface CodSummary {
+  outstanding_by_carrier: { carrier: string; outstanding_amount: number; outstanding_count: number }[]
+  outstanding_total: number
+  registers_reconciled: number
+  last_reconciled_at: string | null
 }
 
 /* ---------------- §14 public storefront ---------------- */
@@ -524,6 +596,18 @@ export interface PublicProduct {
 export interface PublicProductDetail extends PublicProduct {
   description: string
   specs: Record<string, unknown>
+  videos: string[]
+  variants: PublicVariant[]
+}
+
+export interface PublicVariant {
+  id: number
+  label: string
+  price_ngn: number
+  stock: number
+  image: string | null
+  in_stock: boolean
+  price_display?: { amount: number; rate: number; source: string }
 }
 
 export interface PublicStore {
@@ -875,7 +959,7 @@ function isPublicPath(path: string) {
 }
 
 export function useApi() {
-  const req = $fetch.create({
+  const baseReq = $fetch.create({
     onRequest({ options }) {
       if (import.meta.client) {
         const token = localStorage.getItem('ecos:token')
@@ -886,23 +970,69 @@ export function useApi() {
         }
       }
     },
-    onResponseError({ response }) {
-      if (
-        response.status === 401
-        && import.meta.client
-        && !isPublicPath(window.location.pathname)
-      ) {
+  })
+
+  // ---- §43 token refresh (session continuity) ---------------------------
+  // Rotate a still-valid token for a fresh 12h lease. `current` lets the
+  // caller pass the exact credential that just failed (localStorage may
+  // already have been cleared by an earlier failure).
+  async function refreshToken(current?: string): Promise<string | null> {
+    if (!import.meta.client) return null
+    const token = current ?? localStorage.getItem('ecos:token')
+    if (!token) return null
+    try {
+      const res = await $fetch<LoginResponse>('/api/auth/refresh', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      localStorage.setItem('ecos:token', res.token)
+      return res.token
+    }
+    catch {
+      return null
+    }
+  }
+
+  // Every admin API call funnels through here: on a 401 we try ONE silent
+  // token rotation + retry (covers the "session older than 12h" case).
+  // If the refresh also fails the session is genuinely dead -> clear + login.
+  async function req<T>(url: string, opts: Record<string, unknown> = {}): Promise<T> {
+    try {
+      return await baseReq<T>(url as never, opts as never)
+    }
+    catch (err: unknown) {
+      const status = (err as { status?: number; response?: { status?: number } })?.status
+        ?? (err as { response?: { status?: number } })?.response?.status
+      if (status === 401 && import.meta.client && !isPublicPath(window.location.pathname)) {
+        const captured = localStorage.getItem('ecos:token') ?? undefined
+        const fresh = await refreshToken(captured)
+        if (fresh) return await baseReq<T>(url as never, opts as never)
         localStorage.removeItem('ecos:token')
         navigateTo('/login')
       }
-    },
-  })
+      throw err
+    }
+  }
 
   return {
     // ---- auth (§43) ----
     login: (email: string, password: string) =>
       req<LoginResponse>('/api/auth/login', { method: 'POST', body: { email, password } }),
     me: () => req<LoginResponse>('/api/auth/me'),
+    // §43 session continuity: rotate the current token for a fresh 12h lease
+    refreshToken: async () => {
+      if (!import.meta.client) return false
+      const token = localStorage.getItem('ecos:token')
+      if (!token) return false
+      try {
+        const res = await $fetch<LoginResponse>('/api/auth/refresh', {
+          method: 'POST', headers: { Authorization: `Bearer ${token}` },
+        })
+        localStorage.setItem('ecos:token', res.token)
+        return true
+      }
+      catch { return false }
+    },
     createUser: (body: Record<string, unknown>) =>
       req<Record<string, unknown>>('/api/users', { method: 'POST', body }),
 
@@ -955,6 +1085,14 @@ export function useApi() {
       req<Product>('/api/products', { method: 'POST', body }),
     patchProduct: (id: number, body: Record<string, unknown>) =>
       req<Product>(`/api/products/${id}`, { method: 'PATCH', body }),
+
+    // ---- §10 catalog depth: variants ----
+    createVariant: (productId: number, body: { sku?: string; option_name?: string; option_value: string; cost_delta?: number; weight_delta_kg?: number; stock?: number; image?: string | null }) =>
+      req<ProductVariant>(`/api/products/${productId}/variants`, { method: 'POST', body }),
+    patchVariant: (id: number, body: Record<string, unknown>) =>
+      req<ProductVariant>(`/api/products/variants/${id}`, { method: 'PATCH', body }),
+    archiveVariant: (id: number) =>
+      req<void>(`/api/products/variants/${id}`, { method: 'DELETE' }),
 
     leads: () => req<Lead[]>('/api/leads'),
     createLead: (body: Record<string, unknown>) =>
@@ -1099,6 +1237,29 @@ export function useApi() {
     deleteLandingPage: (id: number) =>
       req<void>(`/api/landing-pages/${id}`, { method: 'DELETE' }),
 
+    // ---- §15 versioning + scheduling ----
+    lpVersions: (id: number) => req<LpVersion[]>(`/api/landing-pages/${id}/versions`),
+    restoreLpVersion: (id: number, versionNo: number, publish = false) =>
+      req<LandingPage>(`/api/landing-pages/${id}/versions/${versionNo}/restore`, { method: 'POST', body: { publish } }),
+    scheduleLandingPage: (id: number, publishAt: string) =>
+      req<LandingPage>(`/api/landing-pages/${id}/schedule`, { method: 'POST', body: { publish_at: publishAt } }),
+    cancelLpSchedule: (id: number) =>
+      req<LandingPage>(`/api/landing-pages/${id}/schedule`, { method: 'DELETE' }),
+
+    // ---- §24 COD remittance register ----
+    codRegisters: (status?: string) =>
+      req<CodRegister[]>('/api/cod/registers', { params: status ? { status } : {} }),
+    codRegister: (id: number) => req<CodRegister>(`/api/cod/registers/${id}`),
+    openCodRegister: (carrier: string, note = '') =>
+      req<CodRegister>('/api/cod/registers', { method: 'POST', body: { carrier, note } }),
+    submitCodRegister: (id: number, remittedAmount: number, reference = '') =>
+      req<CodRegister>(`/api/cod/registers/${id}/submit`, { method: 'POST', body: { remitted_amount: remittedAmount, reference } }),
+    reconcileCodRegister: (id: number, counts: { line_id: number; counted_amount: number }[] = []) =>
+      req<CodRegister>(`/api/cod/registers/${id}/reconcile`, { method: 'POST', body: { counts } }),
+    cancelCodRegister: (id: number) =>
+      req<CodRegister>(`/api/cod/registers/${id}/cancel`, { method: 'POST', body: {} }),
+    codSummary: () => req<CodSummary>('/api/cod/summary'),
+
     // ---- public storefront (§14, no auth) ----
     publicStore: () => req<PublicStore | null>('/api/public/store'),
     publicHome: (currency = 'NGN') => req<PublicHome>('/api/public/home', { params: { currency } }),
@@ -1114,7 +1275,7 @@ export function useApi() {
     checkoutQuote: (body: { items: { product_slug: string; qty: number }[]; delivery_fee?: number }) =>
       req<CheckoutQuote>('/api/public/checkout/quote', { method: 'POST', body }),
     checkout: (body: {
-      items: { product_slug: string; qty: number }[]
+      items: { product_slug: string; qty: number; variant_id?: number }[]
       full_name: string
       contact_phone: string
       address: string

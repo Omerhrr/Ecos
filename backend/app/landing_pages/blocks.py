@@ -31,6 +31,8 @@ class BlockField:
 BLOCK_REGISTRY: dict[str, dict] = {
     "hero": {
         "label": "Hero banner",
+        "icon": "★",
+        "accent": "#0ea5e9",
         "fields": [
             BlockField("headline", "Headline"),
             BlockField("subheadline", "Subheadline", "textarea"),
@@ -41,6 +43,8 @@ BLOCK_REGISTRY: dict[str, dict] = {
     },
     "rich_text": {
         "label": "Rich text",
+        "icon": "≡",
+        "accent": "#64748b",
         "fields": [
             BlockField("title", "Title"),
             BlockField("body", "Body", "textarea"),
@@ -48,6 +52,8 @@ BLOCK_REGISTRY: dict[str, dict] = {
     },
     "image_text": {
         "label": "Image + text",
+        "icon": "◩",
+        "accent": "#8b5cf6",
         "fields": [
             BlockField("image", "Image URL", "url"),
             BlockField("title", "Title"),
@@ -59,6 +65,8 @@ BLOCK_REGISTRY: dict[str, dict] = {
     },
     "feature_grid": {
         "label": "Feature grid",
+        "icon": "⚙",
+        "accent": "#f59e0b",
         "fields": [
             BlockField("title", "Title"),
             BlockField("items", "Features", "lines", hint="One per line:  icon | title | text"),
@@ -66,6 +74,8 @@ BLOCK_REGISTRY: dict[str, dict] = {
     },
     "product_showcase": {
         "label": "Product showcase",
+        "icon": "▦",
+        "accent": "#00b374",
         "fields": [
             BlockField("title", "Section title"),
             BlockField("mode", "Pick products by", "select", options=["latest", "category", "selected"]),
@@ -76,6 +86,8 @@ BLOCK_REGISTRY: dict[str, dict] = {
     },
     "testimonials": {
         "label": "Testimonials",
+        "icon": "“",
+        "accent": "#ec4899",
         "fields": [
             BlockField("title", "Title"),
             BlockField("items", "Quotes", "lines", hint="One per line:  name | quote"),
@@ -83,6 +95,8 @@ BLOCK_REGISTRY: dict[str, dict] = {
     },
     "faq": {
         "label": "FAQ",
+        "icon": "?",
+        "accent": "#14b8a6",
         "fields": [
             BlockField("title", "Title"),
             BlockField("items", "Q&A", "lines", hint="One per line:  question | answer"),
@@ -90,12 +104,16 @@ BLOCK_REGISTRY: dict[str, dict] = {
     },
     "trust_badges": {
         "label": "Trust badges",
+        "icon": "✔",
+        "accent": "#16a34a",
         "fields": [
             BlockField("items", "Badges", "lines", hint="One per line:  icon | label"),
         ],
     },
     "cta": {
         "label": "Call to action",
+        "icon": "▶",
+        "accent": "#ef4444",
         "fields": [
             BlockField("title", "Title"),
             BlockField("body", "Body", "textarea"),
@@ -111,6 +129,8 @@ def registry_public() -> list[dict]:
         {
             "type": btype,
             "label": spec["label"],
+            "icon": spec.get("icon", "□"),
+            "accent": spec.get("accent", "#64748b"),
             "fields": [asdict(f) for f in spec["fields"]],
         }
         for btype, spec in BLOCK_REGISTRY.items()

@@ -223,3 +223,25 @@ Work Log:
 Stage Summary:
 - Items 1-5 of the ranked backlog are DONE and verified: the event bus now powers operator-configurable deterministic automation; the AI bench doubled to 9 governed operators with a one-env-var path to live DeepSeek; customers see USD prices and checkout snapshots the corridor FX rate while the ledger stays single-currency honest; analytics closed the measure loop across logistics, finance and product.
 - The fundamental product loop (§60) is now observable through the new analytics suites, and §41 closes the last missing §7 core domain.
+
+---
+Task ID: 12
+Agent: main (Super Z)
+Task: Execute remaining-list items 1-4 — COD remittance register (§24), Catalog depth (§10), LP versioning/scheduling + block thumbnails (§15), Auth token refresh (§43). Environment had been recycled again: rebuilt venv + node_modules from scratch.
+
+Work Log:
+- ENV REBUILD: sandbox reset (venv/node_modules gone, repo intact at 27f496b). Rebuilt backend/.venv (uv) + frontend node_modules (npm), DB rebuilt from the Alembic chain (b8f2d1a4c7e9 head) + seed — second fully migration-born database.
+- MIGRATION b8f2d1a4c7e9: products.videos, product_variants, order_items.variant_id/variant_label, cod_remittances, cod_remittance_lines, landing_page_versions, landing_pages.scheduled_at/scheduled_by.
+- §24 COD REGISTER: new app/cod module. Open register per carrier auto-attaches every collected-but-unreconciled COD payment for that carrier (payments ⋈ orders ⋈ stores ⋈ shipments, org-scoped); submit records the courier's remittance; reconcile counts cash line-by-line (blank = expected). Variance produces a DOUBLE-ENTRY ledger true-up (cod_variance party=logistics signed + party=operator opposite) so the ledger still sums to zero — the finance "Ledger balance" KPI stays a meaningful invariant. Reconciled lines stamp payments.reconciled=1; publishes cod.register_opened + cod.remittance_reconciled (both added to the §41 automation catalog). /api/cod: registers CRUD-ish lifecycle + /summary (outstanding custody by carrier). Finance UI: COD panel with KPIs, carrier chips, open/submit/reconcile flows, line-level counting inputs.
+- §10 CATALOG DEPTH: ProductVariant (unique SKU auto-gen P{n}-xx, option name/value, cost_delta + weight_delta_kg repriced through the SAME §12 waterfall so margin stays supplier-derived, per-variant network stock guard, archive-not-delete since order history references variants). Product.videos JSON. Public PDP: customer-safe variant faces (no SKU/cost), option chips with per-variant price/stock, videos w/ <video> element. CheckoutItemIn.variant_id -> order lines snapshot variant_id/label/title/cost/weight; variant + product stock both decrement. Admin catalog: variants manager modal (add, stock bump, archive) + videos textarea saved via patchProduct.
+- §15 LP VERSIONING + SCHEDULING: LandingPageVersion immutable snapshots — every publish (manual, restore-publish, or scheduled) freezes blocks/theme/seo with incrementing version_no. Restore semantics: draft page -> lands as draft for review; live page -> rollback goes live immediately + is snapshotted (a live page must never diverge from history). Schedule endpoint sets scheduled_at (past rejected); lifespan scheduler loop (60s tick + boot tick) flips due pages live and snapshots them ("scheduled publish"). Editor: Publishing panel (datetime-local schedule, cancel, versions list with Restore as draft / Restore + publish), block palette rebuilt as thumbnail cards from registry icon+accent (9 types).
+- §43 TOKEN REFRESH: POST /api/auth/refresh rotates a still-valid token for a fresh 12h lease, re-checking user status/role in DB. Frontend: useApi refactored — all admin calls flow through one wrapper doing ONE silent refresh+retry on 401, then clear+login only if rotation fails; client plugin re-rotates proactively every 9h; login page itself excluded (public path).
+- SEED: demo variants + videos on the first two products (Package/Color options w/ cost deltas) so the storefront shows the picker out of the box.
+- Order serializer now returns variant_id/variant_label per line.
+- SMOKE scripts/smoke_task12.py: 38/38 PASS on a fresh DB — variant quote/checkout/snapshot/stock decrements, unknown-variant 400, COD lifecycle w/ shortage -> double-entry true-up -> ledger balance check (sum totals ≈ 0), payment reconciled flag, LP v1/v2 snapshots, live+draft restore semantics, past-schedule 400, scheduler auto-publish (waited for the due moment), refresh rotation + garbage-token 401.
+- Browser-verified: PDP option chips + video player, cart line "Option: Package: Pro bundle (+charger)", finance COD panel (3 registers reconciled, cod_variance rows in the ledger), LP editor palette thumbnails + versions panel (screenshots in download/).
+
+Stage Summary:
+- Remaining-list items 1-4 done; DeepSeek live key (user-held) is now the only actionable item before "later bets".
+- Ledger balance invariant preserved under COD variance via double-entry — important precedent for any future true-up entries.
+- Score 35 ✅ / 10 🟡 / 7 ❌ (STATUS.md updated).

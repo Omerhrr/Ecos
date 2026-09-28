@@ -18,9 +18,40 @@ const activeImg = ref(0)
 const cart = useCart()
 const addedToCart = ref(false)
 
+// §10 catalog depth: variant selection drives the displayed price, stock
+// guard and the cart line (two options of one product can coexist in cart).
+const selectedVariantId = ref<number | null>(null)
+
+const selectedVariant = computed<PublicVariant | null>(() => {
+  const p = product.value
+  if (!p || !p.variants?.length) return null
+  return p.variants.find(v => v.id === selectedVariantId.value) ?? p.variants[0]
+})
+
+const displayPrice = computed(() =>
+  selectedVariant.value ? selectedVariant.value.price_ngn : (product.value?.price_ngn ?? 0),
+)
+const displayStock = computed(() =>
+  selectedVariant.value ? selectedVariant.value.stock : (product.value?.stock ?? 0),
+)
+const displayInStock = computed(() =>
+  selectedVariant.value ? selectedVariant.value.in_stock : (product.value?.in_stock ?? false),
+)
+
 function addToCart() {
-  if (!product.value) return
-  cart.add({ ...product.value }, 1)
+  const p = product.value
+  if (!p) return
+  const v = selectedVariant.value
+  cart.add({
+    slug: p.slug,
+    title: p.title,
+    price_ngn: displayPrice.value,
+    image: v?.image ?? p.image,
+    in_stock: displayInStock.value,
+    stock: displayStock.value,
+    variant_id: v?.id ?? null,
+    variant_label: v?.label ?? null,
+  }, 1)
   addedToCart.value = true
   setTimeout(() => (addedToCart.value = false), 1800)
 }
@@ -107,17 +138,50 @@ async function submitIntent() {
 
       <div class="pdp-info">
         <h1>{{ product.title }}</h1>
-        <div class="pdp-price">{{ money(product.price_ngn) }}</div>
+        <div class="pdp-price">{{ money(displayPrice) }}</div>
         <div class="pdp-cod-badge">💵 Pay on delivery — nationwide</div>
 
+        <!-- §10 catalog depth: variant picker -->
+        <div v-if="product.variants.length" class="pdp-variants">
+          <span class="pdp-variants-label">Options</span>
+          <button
+            v-for="v in product.variants"
+            :key="v.id"
+            class="pdp-variant-chip"
+            :class="{
+              active: selectedVariant?.id === v.id,
+              disabled: !v.in_stock,
+            }"
+            :disabled="!v.in_stock"
+            @click="selectedVariantId = v.id"
+          >
+            {{ v.label }}
+            <small>{{ v.in_stock ? money(v.price_ngn) : 'Out of stock' }}</small>
+          </button>
+        </div>
+
         <!-- §14 completion: instant cart path -->
-        <div v-if="product.in_stock" class="pdp-cart-row">
+        <div v-if="displayInStock" class="pdp-cart-row">
           <button class="pub-btn lg" @click="addToCart">
             {{ addedToCart ? 'Added ✓' : 'Add to cart' }}
           </button>
           <NuxtLink to="/cart" class="pdp-cart-link">Go to cart →</NuxtLink>
         </div>
+        <p v-else class="pdp-oos">Out of stock — check back soon.</p>
         <p class="pdp-desc">{{ product.description }}</p>
+
+        <!-- §10: product video media -->
+        <div v-if="product.videos.length" class="pdp-videos">
+          <h3>Product videos</h3>
+          <video
+            v-for="(src, i) in product.videos"
+            :key="i"
+            :src="src"
+            controls
+            preload="metadata"
+            class="pdp-video"
+          >Your browser cannot play this video.</video>
+        </div>
 
         <div v-if="Object.keys(product.specs).length" class="pdp-specs">
           <div v-for="(v, k) in product.specs" :key="k" class="pdp-spec-row">
@@ -150,8 +214,8 @@ async function submitIntent() {
                 <input v-model.number="form.qty" type="number" min="1" max="99" required>
               </label>
               <div v-if="submitError" class="login-error">{{ submitError }}</div>
-              <button class="primary lg" :disabled="submitting || !product.in_stock">
-                {{ !product.in_stock ? 'Out of stock' : submitting ? 'Sending…' : 'Request my order' }}
+              <button class="primary lg" :disabled="submitting || !displayInStock">
+                {{ !displayInStock ? 'Out of stock' : submitting ? 'Sending…' : 'Request my order' }}
               </button>
             </form>
           </template>

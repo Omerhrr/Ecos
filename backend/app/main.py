@@ -35,6 +35,7 @@ from app.notifications import models as notifications_models  # noqa: F401,E402
 from app.procurement import models as procurement_models  # noqa: F401,E402
 from app.warehouse import models as warehouse_models  # noqa: F401,E402
 from app.automation import models as automation_models  # noqa: F401,E402
+from app.cod import models as cod_models  # noqa: F401,E402
 
 from app.core.seed import seed_if_empty  # noqa: E402
 from app.core.deps import require_auth  # noqa: E402
@@ -60,6 +61,7 @@ from app.procurement.router import router as procurement_router  # noqa: E402
 from app.warehouse.router import router as warehouse_router  # noqa: E402
 from app.analytics.router import router as analytics_router  # noqa: E402
 from app.automation.router import router as automation_router  # noqa: E402
+from app.cod.router import router as cod_router  # noqa: E402
 from app.core.models import DomainEvent  # noqa: E402
 
 
@@ -129,9 +131,33 @@ async def lifespan(app: FastAPI):
             except Exception:  # noqa: BLE001 — the worker must survive anything
                 print("[outbound worker] tick failed:\n" + traceback.format_exc())
 
+    # §15 — landing page scheduler: publishes pages whose scheduled moment
+    # has passed, snapshotting each as a new immutable version.
+    from app.landing_pages import router as _lp_router
+
+    async def _lp_scheduler() -> None:
+        while True:
+            await asyncio.sleep(60)
+            try:
+                with _SL() as db:
+                    flipped = _lp_router.run_due_schedules(db)
+                    if flipped:
+                        print(f"[lp scheduler] auto-published pages: {flipped}")
+            except Exception:  # noqa: BLE001 — the scheduler must survive anything
+                print("[lp scheduler] tick failed:\n" + traceback.format_exc())
+
+    # fire one immediate tick so overdue schedules land at boot as well
+    try:
+        with SessionLocal() as db:
+            _lp_router.run_due_schedules(db)
+    except Exception:  # noqa: BLE001
+        print("[lp scheduler] boot tick failed:\n" + traceback.format_exc())
+
     task = asyncio.create_task(_outbound_worker())
+    task2 = asyncio.create_task(_lp_scheduler())
     yield
     task.cancel()
+    task2.cancel()
 
 
 app = FastAPI(
@@ -158,6 +184,7 @@ for r in [
     payments_router, finance_router, landing_pages_router, marketing_router,
     returns_router, settlements_router, ai_router, notifications_router,
     procurement_router, warehouse_router, analytics_router, automation_router,
+    cod_router,
 ]:
     app.include_router(r, prefix="/api")
 

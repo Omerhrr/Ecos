@@ -13,6 +13,7 @@ ENTRY_TYPES = [
     "luxeen_economics",    # allocated out of gross: Luxeen network economics (§57)
     "operator_economics",  # allocated out of gross: operator economics (§57)
     "refund",              # money out
+    "cod_variance",        # §24: courier remittance shortage/overage true-up
 ]
 
 PARTIES = ["customer", "supplier", "logistics", "payment_processor", "luxeen", "operator"]

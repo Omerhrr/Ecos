@@ -9,6 +9,83 @@ const showForm = ref(false)
 const busy = ref(false)
 const statusFilter = ref('')
 
+// ---- §10 catalog depth: variants + videos manager ----
+const variantTarget = ref<Product | null>(null)
+const variantBusy = ref(false)
+const variantError = ref('')
+const variantForm = reactive({ option_name: 'Package', option_value: '', cost_delta: 0, weight_delta_kg: 0, stock: 0 })
+const videosText = ref('')
+
+function openVariants(p: Product) {
+  variantTarget.value = p
+  variantError.value = ''
+  videosText.value = (p.videos ?? []).join('\n')
+}
+
+function closeVariants() {
+  variantTarget.value = null
+}
+
+async function addVariant() {
+  const p = variantTarget.value
+  if (!p || !variantForm.option_value.trim()) return
+  variantBusy.value = true
+  variantError.value = ''
+  try {
+    await api.createVariant(p.id, {
+      option_name: variantForm.option_name.trim(),
+      option_value: variantForm.option_value.trim(),
+      cost_delta: Number(variantForm.cost_delta) || 0,
+      weight_delta_kg: Number(variantForm.weight_delta_kg) || 0,
+      stock: Number(variantForm.stock) || 0,
+    })
+    variantForm.option_value = ''
+    variantForm.cost_delta = 0
+    variantForm.weight_delta_kg = 0
+    variantForm.stock = 0
+    await load()
+    variantTarget.value = products.value.find(x => x.id === p.id) ?? null
+  }
+  catch (e: unknown) {
+    const err = e as { response?: { _data?: { detail?: string } } }
+    variantError.value = err.response?._data?.detail ?? 'Could not create the variant'
+  }
+  finally { variantBusy.value = false }
+}
+
+async function bumpVariantStock(v: ProductVariant, delta: number) {
+  variantBusy.value = true
+  try {
+    await api.patchVariant(v.id, { stock: Math.max(0, v.stock + delta) })
+    await load()
+    variantTarget.value = products.value.find(x => x.id === v.product_id) ?? null
+  }
+  finally { variantBusy.value = false }
+}
+
+async function archiveVariantRow(v: ProductVariant) {
+  variantBusy.value = true
+  try {
+    await api.archiveVariant(v.id)
+    await load()
+    variantTarget.value = products.value.find(x => x.id === v.product_id) ?? null
+  }
+  finally { variantBusy.value = false }
+}
+
+async function saveVideos() {
+  const p = variantTarget.value
+  if (!p) return
+  variantBusy.value = true
+  try {
+    const urls = videosText.value.split('\n').map(s => s.trim()).filter(Boolean)
+    await api.patchProduct(p.id, { videos: urls })
+    await load()
+    variantTarget.value = products.value.find(x => x.id === p.id) ?? null
+  }
+  finally { variantBusy.value = false }
+}
+
 const form = reactive({
   supplier_id: 0, title: '', category: 'electronics', supplier_cost: 100,
   weight_kg: 0.5, markup_pct: null as number | null, stock: 50, description: '',
@@ -89,7 +166,10 @@ async function toggleStatus(p: Product) {
           <tr v-for="p in products" :key="p.id">
             <td>
               <strong>{{ p.title }}</strong>
-              <div class="muted" style="font-size:.75rem">{{ p.weight_kg }} kg · lead {{ p.supplier_lead_time_days ?? '—' }}d</div>
+              <div class="muted" style="font-size:.75rem">
+                {{ p.weight_kg }} kg · lead {{ p.supplier_lead_time_days ?? '—' }}d
+                <span v-if="p.videos?.length"> · 🎬 {{ p.videos.length }}</span>
+              </div>
             </td>
             <td>{{ p.category }}</td>
             <td>{{ p.supplier_name }}</td>
@@ -103,9 +183,14 @@ async function toggleStatus(p: Product) {
             <td>{{ p.stock }}</td>
             <td><StatusBadge :status="p.status" /></td>
             <td>
-              <button class="ghost small" @click="toggleStatus(p)">
-                {{ p.status === 'active' ? 'Archive' : 'Activate' }}
-              </button>
+              <div class="row" style="gap:.3rem;justify-content:flex-end">
+                <button class="ghost small" @click="openVariants(p)">
+                  Variants ({{ p.variants?.length ?? 0 }})
+                </button>
+                <button class="ghost small" @click="toggleStatus(p)">
+                  {{ p.status === 'active' ? 'Archive' : 'Activate' }}
+                </button>
+              </div>
             </td>
           </tr>
           <tr v-if="!products.length"><td colspan="8" class="empty">No products</td></tr>
@@ -162,6 +247,86 @@ async function toggleStatus(p: Product) {
         <div class="row" style="justify-content:flex-end">
           <button class="ghost" @click="showForm = false">Cancel</button>
           <button :disabled="busy || !form.title" @click="create">Create product</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- §10: variants + videos manager -->
+    <div v-if="variantTarget" class="modal-backdrop" @click.self="closeVariants">
+      <div class="modal">
+        <h2 style="margin-bottom:.2rem">{{ variantTarget.title }}</h2>
+        <div class="muted" style="font-size:.8rem;margin-bottom:1rem">
+          Variants & video media — each option is priced through the same §12 waterfall
+          (supplier cost delta + weight delta), never hand-set.
+        </div>
+
+        <div v-if="variantTarget.variants?.length" class="card" style="padding:0;margin-bottom:1rem">
+          <table>
+            <thead>
+              <tr><th>SKU</th><th>Option</th><th>Ecos price</th><th>Δ vs base</th><th>Stock</th><th></th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="v in variantTarget.variants" :key="v.id">
+                <td class="mono" style="font-size:.75rem">{{ v.sku }}</td>
+                <td><strong>{{ v.option_value }}</strong><div class="muted" style="font-size:.72rem">{{ v.option_name }}</div></td>
+                <td>{{ money(v.unit_price_ngn) }}</td>
+                <td :class="v.delta_vs_base_ngn > 0 ? 'ok' : 'muted'">
+                  {{ v.delta_vs_base_ngn > 0 ? '+' : '' }}{{ money(v.delta_vs_base_ngn) }}
+                </td>
+                <td>
+                  <div class="row" style="gap:.3rem">
+                    <button class="ghost tiny" :disabled="variantBusy || v.stock === 0" @click="bumpVariantStock(v, -1)">−</button>
+                    <b>{{ v.stock }}</b>
+                    <button class="ghost tiny" :disabled="variantBusy" @click="bumpVariantStock(v, 1)">+</button>
+                  </div>
+                </td>
+                <td><button class="ghost tiny" :disabled="variantBusy" @click="archiveVariantRow(v)">Archive</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-else class="empty" style="padding:1rem">No variants yet — the base product is the only buyable face.</div>
+
+        <div class="card" style="background:#f8fafc;margin-bottom:1rem">
+          <div style="font-weight:700;font-size:.85rem;margin-bottom:.5rem">Add variant</div>
+          <div class="row">
+            <div class="field" style="flex:1">
+              <label>Option name</label>
+              <input v-model="variantForm.option_name" placeholder="e.g. Color / Package / Size" />
+            </div>
+            <div class="field" style="flex:2">
+              <label>Option value</label>
+              <input v-model="variantForm.option_value" placeholder="e.g. Arctic White" />
+            </div>
+          </div>
+          <div class="row">
+            <div class="field" style="flex:1">
+              <label>Cost delta (CNY)</label>
+              <input v-model.number="variantForm.cost_delta" type="number" step="0.5" />
+            </div>
+            <div class="field" style="flex:1">
+              <label>Weight delta (kg)</label>
+              <input v-model.number="variantForm.weight_delta_kg" type="number" step="0.05" />
+            </div>
+            <div class="field" style="flex:1">
+              <label>Stock</label>
+              <input v-model.number="variantForm.stock" type="number" min="0" />
+            </div>
+          </div>
+          <button class="ghost" :disabled="variantBusy || !variantForm.option_value.trim()" @click="addVariant">
+            + Add variant
+          </button>
+        </div>
+
+        <div class="field">
+          <label>Product videos (one URL per line)</label>
+          <textarea v-model="videosText" rows="2" placeholder="https://cdn.example/demo.mp4" />
+        </div>
+
+        <div v-if="variantError" class="login-error" style="margin-bottom:.6rem">{{ variantError }}</div>
+        <div class="row" style="justify-content:flex-end">
+          <button class="ghost" :disabled="variantBusy" @click="saveVideos">Save videos</button>
+          <button @click="closeVariants">Done</button>
         </div>
       </div>
     </div>

@@ -1,8 +1,10 @@
 <script setup lang="ts">
 /**
- * Landing page editor (§15): page meta + theme + ordered block composer.
- * Field inputs are generated from the backend block registry so the UI
- * never drifts from the server-side schema.
+ * Landing page editor (§15): page meta + theme + ordered block composer,
+ * publish versioning + scheduled publishing. Field inputs are generated
+ * from the backend block registry so the UI never drifts from the
+ * server-side schema; the palette renders each block type as a thumbnail
+ * card built from its registry icon + accent color.
  */
 const route = useRoute()
 const api = useApi()
@@ -17,6 +19,12 @@ const saving = ref(false)
 const expanded = ref<string | null>(null)
 const newBlockType = ref('')
 
+// §15 versioning + scheduling
+const versions = ref<LpVersion[]>([])
+const versionsOpen = ref(false)
+const scheduleAt = ref('')
+const scheduleMsg = ref('')
+
 const title = ref('')
 const slug = ref('')
 const seoTitle = ref('')
@@ -27,6 +35,13 @@ const blocks = ref<LandingPageBlock[]>([])
 const registryMap = computed(() =>
   Object.fromEntries(registry.value.map(r => [r.type, r])),
 )
+
+async function loadVersions() {
+  try {
+    versions.value = await api.lpVersions(pageId)
+  }
+  catch { /* versions panel just stays empty */ }
+}
 
 onMounted(async () => {
   try {
@@ -40,6 +55,10 @@ onMounted(async () => {
     themePrimary.value = p.theme.primary ?? '#00b374'
     blocks.value = JSON.parse(JSON.stringify(p.blocks))
     if (blocks.value.length) expanded.value = blocks.value[0].id
+    if (p.scheduled_at) {
+      scheduleAt.value = new Date(p.scheduled_at).toISOString().slice(0, 16)
+    }
+    await loadVersions()
   }
   catch {
     error.value = 'Could not load this landing page.'
@@ -102,6 +121,41 @@ async function togglePublish() {
     ? await api.unpublishLandingPage(pageId)
     : await api.publishLandingPage(pageId)
   page.value = res
+  await loadVersions()
+}
+
+async function schedule() {
+  if (!scheduleAt.value) return
+  scheduleMsg.value = ''
+  try {
+    const res = await api.scheduleLandingPage(pageId, new Date(scheduleAt.value).toISOString())
+    page.value = res
+    scheduleMsg.value = `Scheduled to go live ${new Date(scheduleAt.value).toLocaleString()} — the scheduler will publish it automatically`
+    await loadVersions()
+  }
+  catch (e: unknown) {
+    scheduleMsg.value = (e as { response?: { _data?: { detail?: string } } })?.response?._data?.detail ?? 'Scheduling failed'
+  }
+}
+
+async function cancelSchedule() {
+  const res = await api.cancelLpSchedule(pageId)
+  page.value = res
+  scheduleAt.value = ''
+  scheduleMsg.value = 'Schedule cancelled'
+}
+
+async function restoreVersion(versionNo: number, publish: boolean) {
+  const res = await api.restoreLpVersion(pageId, versionNo, publish)
+  page.value = res
+  blocks.value = JSON.parse(JSON.stringify(res.blocks))
+  themePrimary.value = res.theme.primary ?? '#00b374'
+  seoTitle.value = res.seo.title ?? ''
+  seoDescription.value = res.seo.description ?? ''
+  scheduleMsg.value = publish
+    ? `Restored v${versionNo} and pushed it live`
+    : `Restored v${versionNo} as draft — review, then Publish`
+  await loadVersions()
 }
 
 async function removeBlock_(i: number) {
@@ -163,17 +217,73 @@ async function removeBlock_(i: number) {
         </div>
       </div>
 
+      <!-- §15 scheduling + versioning -->
+      <div class="card" style="margin-bottom:.9rem">
+        <div class="spread" style="margin-bottom:.6rem">
+          <h2 style="margin:0">Publishing (§15)</h2>
+          <button class="ghost small" @click="versionsOpen = !versionsOpen">
+            {{ versionsOpen ? 'Hide versions' : `Versions (${versions.filter(v => !v.is_current).length})` }}
+          </button>
+        </div>
+        <div class="editor-grid">
+          <label class="field">
+            <span>Scheduled go-live</span>
+            <input v-model="scheduleAt" type="datetime-local" step="60">
+          </label>
+          <div class="field">
+            <span>&nbsp;</span>
+            <div class="row" style="gap:.4rem">
+              <button class="primary small" :disabled="!scheduleAt" @click="schedule">Schedule</button>
+              <button v-if="page?.scheduled_at" class="ghost small" @click="cancelSchedule">Cancel schedule</button>
+            </div>
+          </div>
+        </div>
+        <div v-if="page?.scheduled_at" class="muted" style="font-size:.78rem">
+          ⏱ Goes live automatically {{ new Date(page.scheduled_at).toLocaleString() }}
+        </div>
+        <div v-if="scheduleMsg" class="muted" style="font-size:.78rem">{{ scheduleMsg }}</div>
+        <div class="muted" style="font-size:.72rem;margin-top:.4rem">
+          Every publish (manual or scheduled) freezes an immutable version — roll back any time.
+        </div>
+
+        <div v-if="versionsOpen" class="lp-versions">
+          <div v-for="v in versions" :key="String(v.version_no)" class="lp-version-row">
+            <div>
+              <b>{{ v.version_no === 'live' ? 'Current draft' : `v${v.version_no}` }}</b>
+              <span v-if="v.is_current" class="badge gray" style="margin-left:.4rem">editable</span>
+              <span v-else-if="Number(v.version_no) === Math.max(...versions.filter(x => !x.is_current).map(x => Number(x.version_no))) && !page?.scheduled_at" class="badge green" style="margin-left:.4rem">live</span>
+              <div class="muted" style="font-size:.72rem">
+                {{ v.block_count }} blocks · {{ v.published_at ? new Date(v.published_at).toLocaleString() : '—' }}
+                {{ v.note ? `· ${v.note}` : '' }}
+              </div>
+            </div>
+            <div v-if="!v.is_current" class="row" style="gap:.3rem">
+              <button class="ghost small" @click="restoreVersion(Number(v.version_no), false)">Restore as draft</button>
+              <button class="small" @click="restoreVersion(Number(v.version_no), true)">Restore + publish</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- blocks -->
       <div class="card">
         <div class="spread" style="margin-bottom:.8rem">
           <h2>Blocks ({{ blocks.length }})</h2>
-          <div class="editor-add">
-            <select v-model="newBlockType" class="select">
-              <option value="" disabled>Add a block…</option>
-              <option v-for="r in registry" :key="r.type" :value="r.type">{{ r.label }}</option>
-            </select>
-            <button class="primary small" :disabled="!newBlockType" @click="addBlock">Add</button>
-          </div>
+        </div>
+
+        <!-- §15 block palette with thumbnails -->
+        <div class="lp-palette">
+          <button
+            v-for="r in registry"
+            :key="r.type"
+            class="lp-palette-card"
+            @click="newBlockType = r.type; addBlock()"
+          >
+            <span class="lp-palette-thumb" :style="{ background: `linear-gradient(135deg, ${r.accent ?? '#64748b'}22, ${r.accent ?? '#64748b'}55)`, color: r.accent ?? '#64748b' }">
+              {{ r.icon ?? '□' }}
+            </span>
+            <span class="lp-palette-label">{{ r.label }}</span>
+          </button>
         </div>
 
         <div v-if="!blocks.length" class="empty">
@@ -220,3 +330,26 @@ async function removeBlock_(i: number) {
     </template>
   </div>
 </template>
+
+<style scoped>
+.lp-palette {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: .55rem; margin-bottom: 1rem;
+}
+.lp-palette-card {
+  display: flex; flex-direction: column; align-items: center; gap: .4rem;
+  border: 1px solid var(--border); border-radius: 12px; background: #fff;
+  padding: .7rem .4rem; cursor: pointer; transition: border-color .15s, transform .15s;
+}
+.lp-palette-card:hover { border-color: var(--accent); transform: translateY(-1px); }
+.lp-palette-thumb {
+  width: 42px; height: 42px; border-radius: 10px; display: flex; align-items: center;
+  justify-content: center; font-size: 1.25rem; font-weight: 800;
+}
+.lp-palette-label { font-size: .74rem; font-weight: 600; color: #334155; text-align: center; }
+.lp-versions { margin-top: .8rem; display: flex; flex-direction: column; gap: .4rem; }
+.lp-version-row {
+  display: flex; justify-content: space-between; align-items: center; gap: .8rem;
+  border: 1px solid var(--border); border-radius: 10px; padding: .5rem .7rem;
+}
+</style>

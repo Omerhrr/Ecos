@@ -58,6 +58,7 @@ def serialize_detail(db: Session, o: m.Order) -> dict:
         {
             "id": i.id, "product_id": i.product_id, "title": i.title, "qty": i.qty,
             "unit_price": i.unit_price, "supplier_cost_cny": i.supplier_cost_cny,
+            "variant_id": i.variant_id, "variant_label": i.variant_label,
         }
         for i in db.query(m.OrderItem).filter(m.OrderItem.order_id == o.id).all()
     ]

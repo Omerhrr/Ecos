@@ -64,6 +64,9 @@ class OrderItem(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     order_id: Mapped[int] = mapped_column(Integer, index=True)
     product_id: Mapped[int] = mapped_column(Integer, index=True)
+    # §10 catalog depth: the exact variant face the customer bought
+    variant_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    variant_label: Mapped[str | None] = mapped_column(String(200), nullable=True)
     title: Mapped[str] = mapped_column(String(255))
     qty: Mapped[int] = mapped_column(Integer, default=1)
     unit_price: Mapped[float] = mapped_column(Float)  # NGN snapshot at order time

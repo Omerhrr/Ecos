@@ -82,6 +82,25 @@ def public_card(db: Session, p: cm.Product, fx: dict | None = None) -> dict:
     return card
 
 
+def _public_variant(p: cm.Product, v, fx: dict | None = None) -> dict:
+    """Customer-safe variant face (§10). SKU/cost stay internal (§9 spirit)."""
+    adj = price_product(
+        supplier_cost=p.supplier_cost + v.cost_delta, currency=p.currency,
+        weight_kg=p.weight_kg + v.weight_delta_kg, markup_pct=p.markup_pct,
+    )
+    out = {
+        "id": v.id,
+        "label": f"{v.option_name}: {v.option_value}".strip(": ") if v.option_name else v.option_value,
+        "price_ngn": adj.ecos_price_ngn,
+        "stock": v.stock,
+        "image": v.image,
+        "in_stock": v.stock > 0,
+    }
+    if fx:
+        out["price_display"] = _money_ngn(adj.ecos_price_ngn, fx)
+    return out
+
+
 def _active_store(db: Session) -> stm.Store | None:
     return (
         db.query(stm.Store)
@@ -164,10 +183,18 @@ def get_public_product(slug: str, currency: str = "NGN", db: Session = Depends(g
     p = db.query(cm.Product).filter(cm.Product.slug == slug, cm.Product.status == "active").first()
     if not p:
         raise HTTPException(404, "Product not found")
+    variants = (
+        db.query(cm.ProductVariant)
+        .filter(cm.ProductVariant.product_id == p.id, cm.ProductVariant.status == "active")
+        .order_by(cm.ProductVariant.id)
+        .all()
+    )
     return {
         **public_card(db, p, fx),
         "description": p.description,
         "specs": p.specs or {},
+        "videos": p.videos or [],
+        "variants": [_public_variant(p, v, fx) for v in variants],
     }
 
 
@@ -247,13 +274,35 @@ def _resolve_checkout_items(db: Session, items: list[dict]) -> list[dict]:
         ).first()
         if product is None:
             raise HTTPException(404, f"Product not found: {slug}")
+
+        variant = None
+        variant_id = item.get("variant_id")
+        if variant_id:
+            variant = db.get(cm.ProductVariant, int(variant_id))
+            if (variant is None or variant.product_id != product.id
+                    or variant.status != "active"):
+                raise HTTPException(400, f"Invalid option for {product.title}")
+            if variant.stock < qty:
+                raise HTTPException(
+                    409, f"Insufficient stock for {variant.option_value or variant.sku} — "
+                    f"only {variant.stock} left"
+                )
+
+        effective_cost = product.supplier_cost + (variant.cost_delta if variant else 0.0)
+        effective_weight = product.weight_kg + (variant.weight_delta_kg if variant else 0.0)
         breakdown = price_product(
-            supplier_cost=product.supplier_cost, currency=product.currency,
-            weight_kg=product.weight_kg, markup_pct=product.markup_pct,
+            supplier_cost=effective_cost, currency=product.currency,
+            weight_kg=effective_weight, markup_pct=product.markup_pct,
         )
+        label = None
+        if variant is not None:
+            label = (
+                f"{variant.option_name}: {variant.option_value}"
+                if variant.option_name else variant.option_value
+            )
         resolved.append({
-            "product": product, "qty": qty,
-            "unit_price": breakdown.ecos_price_ngn,
+            "product": product, "variant": variant, "variant_label": label,
+            "qty": qty, "unit_price": breakdown.ecos_price_ngn,
             "line_total": breakdown.ecos_price_ngn * qty,
         })
     if not resolved:
@@ -264,6 +313,7 @@ def _resolve_checkout_items(db: Session, items: list[dict]) -> list[dict]:
 class CheckoutItemIn(BaseModel):
     product_slug: str
     qty: int = Field(ge=1, le=99)
+    variant_id: int | None = None  # §10: the exact option the customer picked
 
 
 class QuoteIn(BaseModel):
@@ -284,11 +334,17 @@ def checkout_quote(payload: QuoteIn, db: Session = Depends(get_db)):
         "lines": [
             {
                 "product_slug": l["product"].slug,
-                "title": l["product"].title,
+                "title": (
+                    f"{l['product'].title} — {l['variant_label']}"
+                    if l["variant_label"] else l["product"].title
+                ),
                 "qty": l["qty"],
                 "unit_price": l["unit_price"],
                 "line_total": l["line_total"],
-                "in_stock": l["product"].stock >= l["qty"],
+                "in_stock": (
+                    l["product"].stock >= l["qty"]
+                    and (l["variant"] is None or l["variant"].stock >= l["qty"])
+                ),
             }
             for l in lines
         ],
@@ -341,7 +397,6 @@ def checkout(payload: CheckoutIn, db: Session = Depends(get_db)):
                 409, f"Insufficient stock for {l['product'].title} — only "
                 f"{l['product'].stock} left"
             )
-
     # find-or-create the customer by phone within this store (§18)
     phone = payload.contact_phone.strip()
     customer = (
@@ -362,7 +417,13 @@ def checkout(payload: CheckoutIn, db: Session = Depends(get_db)):
     try:
         order = order_service.create_cart_order(
             db, store_id=store.id, customer_id=customer.id,
-            items=[{"product_id": l["product"].id, "qty": l["qty"]} for l in lines],
+            items=[
+                {
+                    "product_id": l["product"].id, "qty": l["qty"],
+                    "variant_id": (l["variant"].id if l["variant"] else None),
+                }
+                for l in lines
+            ],
             payment_method=payload.payment_method, delivery_fee=0.0,
             source="storefront_checkout",
             display_currency=payload.display_currency,

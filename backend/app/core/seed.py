@@ -123,6 +123,41 @@ def seed_if_empty(db: Session) -> bool:
     db.add_all(products)
     db.flush()
 
+    # --- Catalog depth (§10): demo variants + video media on the first
+    # two products, so the storefront PDP shows the variant selector and
+    # the COD/stock guards have per-option counters to work with. ---
+    if products:
+        first, second = products[0], products[1]
+        first.videos = [f"https://cdn.luxeen.example/demo/{first.slug}.mp4"]
+        second.videos = [f"https://cdn.luxeen.example/demo/{second.slug}.mp4"]
+        demo_variants = [
+            cm.ProductVariant(
+                product_id=first.id, sku=f"P{first.id}-STD",
+                option_name="Package", option_value="Standard",
+                cost_delta=0.0, weight_delta_kg=0.0,
+                stock=max(first.stock - 2, 0),
+            ),
+            cm.ProductVariant(
+                product_id=first.id, sku=f"P{first.id}-PRO",
+                option_name="Package", option_value="Pro bundle (+charger)",
+                cost_delta=25.0, weight_delta_kg=0.15,
+                stock=max(min(first.stock, 5), 0),
+            ),
+            cm.ProductVariant(
+                product_id=second.id, sku=f"P{second.id}-BLK",
+                option_name="Color", option_value="Midnight Black",
+                cost_delta=0.0, weight_delta_kg=0.0,
+                stock=max(second.stock - 1, 0),
+            ),
+            cm.ProductVariant(
+                product_id=second.id, sku=f"P{second.id}-WHT",
+                option_name="Color", option_value="Arctic White",
+                cost_delta=12.0, weight_delta_kg=0.0,
+                stock=max(min(second.stock, 4), 0),
+            ),
+        ]
+        db.add_all(demo_variants)
+
     # --- Storefront (§13) ---
     store = stm.Store(org_id=operator.id, name="Kara NG Store", slug="kara-ng", country="NG", currency="NGN")
     db.add(store)

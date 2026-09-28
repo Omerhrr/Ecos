@@ -56,6 +56,7 @@ def summary(p: m.LandingPage) -> dict:
         "block_count": len(p.blocks or []),
         "updated_at": (p.updated_at or p.created_at).isoformat() if p.updated_at or p.created_at else None,
         "published_at": p.published_at.isoformat() if p.published_at else None,
+        "scheduled_at": p.scheduled_at.isoformat() if p.scheduled_at else None,
     }
 
 
@@ -66,6 +67,28 @@ def detail(p: m.LandingPage) -> dict:
         "theme": p.theme or {},
         "seo": p.seo or {},
     }
+
+
+def _snapshot_version(db: Session, page: m.LandingPage, *, published_by: int | None = None,
+                      note: str = "") -> m.LandingPageVersion:
+    """Freeze the exact blocks/theme/seo being published (§15 versioning)."""
+    last = (
+        db.query(m.LandingPageVersion)
+        .filter(m.LandingPageVersion.page_id == page.id)
+        .order_by(m.LandingPageVersion.version_no.desc())
+        .first()
+    )
+    version = m.LandingPageVersion(
+        page_id=page.id,
+        version_no=(last.version_no + 1) if last else 1,
+        blocks=page.blocks or [], theme=page.theme or {}, seo=page.seo or {},
+        published_by=published_by,
+        published_at=datetime.now(timezone.utc),
+        note=note or ("scheduled publish" if page.scheduled_at else ""),
+    )
+    db.add(version)
+    db.flush()
+    return version
 
 
 def _scoped(ctx: AuthContext, page: m.LandingPage) -> bool:
@@ -171,10 +194,14 @@ def patch_page(
 @router.post("/{page_id}/publish")
 def publish_page(page_id: int, ctx: AuthContext = Depends(require_perm("landing_pages:write")), db: Session = Depends(get_db)):
     page = _get_scoped(ctx, page_id, db)
+    page.scheduled_at = None  # a manual publish supersedes any pending schedule
     if page.status != "published":
         page.status = "published"
         page.published_at = datetime.now(timezone.utc)
-        publish(db, "landing_page.published", {"page_id": page.id, "slug": page.slug})
+    version = _snapshot_version(db, page, published_by=ctx.user.id)
+    publish(db, "landing_page.published", {
+        "page_id": page.id, "slug": page.slug, "version_no": version.version_no,
+    })
     db.commit()
     return detail(page)
 
@@ -187,6 +214,183 @@ def unpublish_page(page_id: int, ctx: AuthContext = Depends(require_perm("landin
         publish(db, "landing_page.unpublished", {"page_id": page.id, "slug": page.slug})
     db.commit()
     return detail(page)
+
+
+# --------------------------------------------------------- §15 versioning
+
+def _version_dict(v: m.LandingPageVersion) -> dict:
+    return {
+        "id": v.id, "page_id": v.page_id, "version_no": v.version_no,
+        "block_count": len(v.blocks or []),
+        "theme": v.theme or {}, "seo": v.seo or {},
+        "published_by": v.published_by,
+        "published_at": v.published_at.isoformat() if v.published_at else None,
+        "note": v.note,
+        "is_current": False,
+    }
+
+
+@router.get("/{page_id}/versions")
+def list_versions(page_id: int, ctx: AuthContext = Depends(require_perm("landing_pages:read")), db: Session = Depends(get_db)):
+    page = _get_scoped(ctx, page_id, db)
+    versions = (
+        db.query(m.LandingPageVersion)
+        .filter(m.LandingPageVersion.page_id == page.id)
+        .order_by(m.LandingPageVersion.version_no.desc())
+        .all()
+    )
+    out = [_version_dict(v) for v in versions]
+    # the live page content itself is the newest "version" until republished
+    out.insert(0, {
+        "id": None, "page_id": page.id, "version_no": "live",
+        "block_count": len(page.blocks or []),
+        "theme": page.theme or {}, "seo": page.seo or {},
+        "published_by": page.created_by,
+        "published_at": page.updated_at.isoformat() if page.updated_at else None,
+        "note": "Current draft (not yet snapshotted)",
+        "is_current": True,
+    })
+    return out
+
+
+@router.get("/{page_id}/versions/{version_no}")
+def get_version(page_id: int, version_no: int, ctx: AuthContext = Depends(require_perm("landing_pages:read")), db: Session = Depends(get_db)):
+    _get_scoped(ctx, page_id, db)
+    v = (
+        db.query(m.LandingPageVersion)
+        .filter(m.LandingPageVersion.page_id == page_id,
+                m.LandingPageVersion.version_no == version_no)
+        .first()
+    )
+    if not v:
+        raise HTTPException(404, "Version not found")
+    return {**_version_dict(v), "blocks": v.blocks or []}
+
+
+class RestoreIn(BaseModel):
+    publish: bool = False  # restore straight back to the live page?
+
+
+@router.post("/{page_id}/versions/{version_no}/restore")
+def restore_version(
+    page_id: int, version_no: int, payload: RestoreIn,
+    ctx: AuthContext = Depends(require_perm("landing_pages:write")),
+    db: Session = Depends(get_db),
+):
+    """Roll back: copy a snapshot's blocks/theme/seo onto the page.
+
+    - page is a draft  -> restored content lands as a draft for review
+    - page is published -> the rollback goes live immediately (a live page
+      must never silently diverge from what history says it published) and
+      the rollback itself is snapshotted as a new version.
+    `publish: true` additionally (re)publishes a draft page in one step.
+    """
+    page = _get_scoped(ctx, page_id, db)
+    v = (
+        db.query(m.LandingPageVersion)
+        .filter(m.LandingPageVersion.page_id == page_id,
+                m.LandingPageVersion.version_no == version_no)
+        .first()
+    )
+    if not v:
+        raise HTTPException(404, "Version not found")
+    page.blocks = v.blocks or []
+    page.theme = v.theme or {}
+    page.seo = v.seo or {}
+    page.scheduled_at = None
+    if payload.publish:
+        if page.status != "published":
+            page.status = "published"
+            page.published_at = datetime.now(timezone.utc)
+        version = _snapshot_version(
+            db, page, published_by=ctx.user.id,
+            note=f"restore of v{version_no}",
+        )
+        publish(db, "landing_page.published", {
+            "page_id": page.id, "slug": page.slug, "version_no": version.version_no,
+            "restored_from": version_no,
+        })
+    else:
+        if page.status == "published":
+            # live content changed under the published flag -> snapshot the rollback too
+            version = _snapshot_version(
+                db, page, published_by=ctx.user.id,
+                note=f"restore of v{version_no}",
+            )
+            publish(db, "landing_page.updated", {
+                "page_id": page.id, "slug": page.slug,
+                "restored_from": version_no, "version_no": version.version_no,
+            })
+        else:
+            publish(db, "landing_page.updated", {
+                "page_id": page.id, "slug": page.slug, "restored_from": version_no,
+            })
+    db.commit()
+    db.refresh(page)
+    return detail(page)
+
+
+# --------------------------------------------------------- §15 scheduling
+
+class ScheduleIn(BaseModel):
+    publish_at: datetime
+
+
+@router.post("/{page_id}/schedule")
+def schedule_page(
+    page_id: int, payload: ScheduleIn,
+    ctx: AuthContext = Depends(require_perm("landing_pages:write")),
+    db: Session = Depends(get_db),
+):
+    """Queue this page to go live automatically at `publish_at` (§15)."""
+    page = _get_scoped(ctx, page_id, db)
+    when = payload.publish_at
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    if when <= datetime.now(timezone.utc):
+        raise HTTPException(400, "publish_at must be in the future — use Publish for immediate go-live")
+    page.scheduled_at = when
+    page.scheduled_by = ctx.user.id
+    publish(db, "landing_page.scheduled", {
+        "page_id": page.id, "slug": page.slug,
+        "publish_at": when.isoformat(),
+    })
+    db.commit()
+    return detail(page)
+
+
+@router.delete("/{page_id}/schedule")
+def cancel_schedule(page_id: int, ctx: AuthContext = Depends(require_perm("landing_pages:write")), db: Session = Depends(get_db)):
+    page = _get_scoped(ctx, page_id, db)
+    page.scheduled_at = None
+    db.commit()
+    return detail(page)
+
+
+def run_due_schedules(db: Session) -> list[int]:
+    """Scheduler tick (called from the app lifespan loop): flip every due
+    scheduled page live, snapshotting each as a new version. Returns ids."""
+    now = datetime.now(timezone.utc)
+    due = (
+        db.query(m.LandingPage)
+        .filter(m.LandingPage.scheduled_at.isnot(None),
+                m.LandingPage.scheduled_at <= now)
+        .all()
+    )
+    flipped: list[int] = []
+    for page in due:
+        page.status = "published"
+        page.published_at = now
+        page.scheduled_at = None
+        version = _snapshot_version(db, page, note="scheduled publish")
+        publish(db, "landing_page.published", {
+            "page_id": page.id, "slug": page.slug,
+            "version_no": version.version_no, "scheduled": True,
+        })
+        flipped.append(page.id)
+    if flipped:
+        db.commit()
+    return flipped
 
 
 @router.delete("/{page_id}", status_code=204)

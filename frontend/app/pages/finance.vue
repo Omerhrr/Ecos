@@ -11,6 +11,16 @@ const fxEdit = ref<{ base: string; quote: string; rate: string } | null>(null)
 const fxError = ref('')
 const fxSaved = ref('')
 
+// §24 COD remittance register
+const cod = ref<CodSummary | null>(null)
+const codRegisters = ref<CodRegister[]>([])
+const codDetail = ref<CodRegister | null>(null)
+const codOpenCarrier = ref('')
+const codRemit = ref<{ id: number; amount: string; reference: string } | null>(null)
+const codCounts = ref<Record<number, string>>({})
+const codMsg = ref('')
+const codErr = ref('')
+
 const NET_TYPES = ['customer_payment', 'supplier_payable', 'logistics_cost', 'payment_cost']
 
 async function loadFx() {
@@ -20,10 +30,80 @@ async function loadFx() {
   catch { /* no finance:read — panel stays hidden */ }
 }
 
+async function loadCod() {
+  try {
+    const [summary, registers] = await Promise.all([
+      api.codSummary(),
+      api.codRegisters(),
+    ])
+    cod.value = summary
+    codRegisters.value = registers
+  }
+  catch { /* no finance:read — panel stays hidden */ }
+}
+
+async function openCodDetail(r: CodRegister) {
+  codDetail.value = await api.codRegister(r.id)
+  codCounts.value = {}
+}
+
+async function openRegister() {
+  if (!codOpenCarrier.value.trim()) return
+  codErr.value = ''
+  codMsg.value = ''
+  try {
+    const reg = await api.openCodRegister(codOpenCarrier.value.trim())
+    codMsg.value = `Register ${reg.register_code} opened — ${reg.line_count} collection(s), ${money(reg.expected_amount)} expected`
+    codOpenCarrier.value = ''
+    await loadCod()
+  }
+  catch (e: unknown) {
+    const err = e as { response?: { _data?: { detail?: string } } }
+    codErr.value = err.response?._data?.detail ?? 'Could not open the register'
+  }
+}
+
+async function submitRemit() {
+  if (!codRemit.value) return
+  codErr.value = ''
+  codMsg.value = ''
+  try {
+    await api.submitCodRegister(codRemit.value.id, Number(codRemit.value.amount) || 0, codRemit.value.reference)
+    codMsg.value = 'Remittance recorded — reconcile the cash to close the register'
+    codRemit.value = null
+    await loadCod()
+  }
+  catch (e: unknown) {
+    const err = e as { response?: { _data?: { detail?: string } } }
+    codErr.value = err.response?._data?.detail ?? 'Submit failed'
+  }
+}
+
+async function reconcile(r: CodRegister) {
+  codErr.value = ''
+  codMsg.value = ''
+  try {
+    const counts = Object.entries(codCounts.value).map(([line_id, amount]) => ({
+      line_id: Number(line_id),
+      counted_amount: Number(amount) || 0,
+    }))
+    const reg = await api.reconcileCodRegister(r.id, counts)
+    codMsg.value = reg.variance_amount === 0
+      ? `${reg.register_code} reconciled clean — payments stamped reconciled`
+      : `${reg.register_code} closed with variance ${money(reg.variance_amount)} — cod_variance true-up written to the ledger`
+    codDetail.value = null
+    await loadCod()
+  }
+  catch (e: unknown) {
+    const err = e as { response?: { _data?: { detail?: string } } }
+    codErr.value = err.response?._data?.detail ?? 'Reconcile failed'
+  }
+}
+
 onMounted(async () => {
   try { data.value = await api.ledger() }
   finally { loading.value = false }
-  await loadFx()
+  await Promise.all([loadFx(), loadCod()])
 })
 
 const balance = computed(() =>
@@ -119,6 +199,107 @@ async function saveRate(row: FxRateRow) {
         <NuxtLink to="/pricing" target="_blank" class="muted" style="font-size:.78rem">See the public USD pricing page →</NuxtLink>
       </div>
 
+      <!-- §24 COD remittance register -->
+      <div class="card" style="padding:1rem 1.2rem;margin:1rem 0">
+        <div class="row" style="justify-content:space-between;align-items:baseline">
+          <h3 style="margin:0">COD remittance register (§24)</h3>
+          <span class="muted" style="font-size:.76rem">courier custody: collected → remitted → counted → ledger true-up on variance</span>
+        </div>
+        <div v-if="codMsg" class="fx-msg ok">{{ codMsg }}</div>
+        <div v-if="codErr" class="fx-msg err">{{ codErr }}</div>
+
+        <div v-if="cod" class="kpi-grid" style="margin:.8rem 0">
+          <KpiCard label="Cash with couriers" :value="money(cod.outstanding_total)" :sub="`${cod.outstanding_by_carrier.reduce((a, b) => a + b.outstanding_count, 0)} collection(s) outstanding`" />
+          <KpiCard label="Registers reconciled" :value="String(cod.registers_reconciled)" :sub="cod.last_reconciled_at ? `last ${date(cod.last_reconciled_at)}` : 'none yet'" />
+        </div>
+        <div v-if="cod?.outstanding_by_carrier.length" class="cod-carriers">
+          <div v-for="b in cod.outstanding_by_carrier" :key="b.carrier" class="cod-carrier-chip">
+            <b>{{ b.carrier }}</b> holds {{ money(b.outstanding_amount) }}
+            <span class="muted">({{ b.outstanding_count }})</span>
+          </div>
+        </div>
+
+        <div class="row" style="margin:.7rem 0;gap:.5rem">
+          <input
+            v-model="codOpenCarrier"
+            placeholder="Courier name — e.g. GIG Logistics"
+            style="max-width:20rem"
+          >
+          <button :disabled="!codOpenCarrier.trim()" @click="openRegister">Open register</button>
+        </div>
+
+        <table v-if="codRegisters.length">
+          <thead><tr><th>Register</th><th>Carrier</th><th>Status</th><th>Expected</th><th>Remitted</th><th>Counted</th><th>Variance</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="r in codRegisters" :key="r.id">
+              <td class="mono">{{ r.register_code }}</td>
+              <td>{{ r.carrier }}</td>
+              <td><span class="badge" :class="r.status === 'reconciled' ? 'green' : r.status === 'cancelled' ? 'gray' : 'amber'">{{ r.status }}</span></td>
+              <td>{{ money(r.expected_amount) }}</td>
+              <td>{{ r.remitted_amount ? money(r.remitted_amount) : '—' }}</td>
+              <td>{{ r.status === 'reconciled' ? money(r.counted_amount) : '—' }}</td>
+              <td :style="{ fontWeight: 700, color: r.variance_amount < 0 ? '#f87171' : '#00d68f' }">
+                {{ r.status === 'reconciled' ? money(r.variance_amount) : '—' }}
+              </td>
+              <td>
+                <div class="row" style="gap:.3rem;justify-content:flex-end">
+                  <button class="small ghost" @click="openCodDetail(r)">Lines</button>
+                  <button
+                    v-if="r.status === 'draft'"
+                    class="small"
+                    @click="codRemit = { id: r.id, amount: String(r.expected_amount), reference: '' }"
+                  >Record remittance</button>
+                  <button v-if="r.status === 'remitted'" class="small" @click="reconcile(r)">Reconcile</button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="empty">No registers yet — open one after couriers deliver COD orders</div>
+
+        <!-- record remittance inline form -->
+        <div v-if="codRemit" class="cod-inline" style="margin-top:.7rem">
+          <b>Record remittance for register #{{ codRemit.id }}</b>
+          <div class="row" style="margin-top:.4rem;gap:.5rem">
+            <input v-model="codRemit.amount" type="number" min="0" step="0.01" placeholder="Remitted amount" style="max-width:12rem">
+            <input v-model="codRemit.reference" placeholder="Courier receipt ref (optional)" style="max-width:16rem">
+            <button @click="submitRemit">Save remittance</button>
+            <button class="ghost" @click="codRemit = null">Cancel</button>
+          </div>
+        </div>
+
+        <!-- line-level counting -->
+        <div v-if="codDetail && codDetail.status === 'remitted'" class="cod-inline" style="margin-top:.7rem">
+          <b>Count the cash — {{ codDetail.register_code }} ({{ codDetail.carrier }})</b>
+          <table style="margin-top:.5rem">
+            <thead><tr><th>Order</th><th>Expected</th><th>Counted</th></tr></thead>
+            <tbody>
+              <tr v-for="l in codDetail.lines" :key="l.id">
+                <td class="mono">{{ l.order_number }}</td>
+                <td>{{ money(l.expected_amount) }}</td>
+                <td>
+                  <input
+                    v-model="codCounts[l.id]"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    :placeholder="String(l.expected_amount)"
+                    class="rate-input"
+                    style="width:9rem"
+                  >
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="muted" style="font-size:.74rem;margin:.4rem 0">Leave a line blank to accept the expected amount as counted.</div>
+          <button @click="reconcile(codDetail)">Reconcile register</button>
+        </div>
+        <div v-else-if="codDetail" class="cod-inline muted" style="margin-top:.7rem;font-size:.8rem">
+          {{ codDetail.register_code }} · {{ codDetail.lines?.length ?? 0 }} line(s) ·
+          {{ codDetail.status === 'reconciled' ? `reconciled ${codDetail.reconciled_at ? date(codDetail.reconciled_at) : ''}` : 'not yet remitted' }}
+        </div>
+      </div>
+
       <div class="card" style="padding:0">
         <table>
           <thead>
@@ -149,4 +330,10 @@ async function saveRate(row: FxRateRow) {
 .fx-msg.ok { color: #00d68f; }
 .fx-msg.err { color: #f87171; }
 .rate-input { background: #131b2c; color: #e2e8f0; border: 1px solid #26324a; border-radius: 6px; padding: .25rem .4rem; }
+.cod-carriers { display: flex; flex-wrap: wrap; gap: .5rem; margin: .4rem 0 .7rem; }
+.cod-carrier-chip {
+  border: 1px solid #26324a; border-radius: 10px; padding: .45rem .7rem; font-size: .8rem;
+  background: #131b2c;
+}
+.cod-inline { border-top: 1px dashed #26324a; padding-top: .7rem; }
 </style>

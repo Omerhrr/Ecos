@@ -106,3 +106,22 @@ def me(ctx: AuthContext = Depends(require_auth)):
         "org": org_dict(ctx.org),
         "permissions": ctx.permissions,
     }
+
+
+@auth_router.post("/refresh")
+def refresh(ctx: AuthContext = Depends(require_auth), db: Session = Depends(get_db)):
+    """Rotate a still-valid token for a fresh 12h lease (§43 session continuity).
+
+    The current token is validated by require_auth exactly like any other
+    call — so a stolen/expired token gains nothing — and the user's status
+    and role are re-checked against the DB, so deactivations and role
+    changes take effect at refresh time, not just at login.
+    """
+    if not ctx.user.is_active:
+        raise HTTPException(403, "This account is disabled")
+    return {
+        "token": create_token(ctx.user.id, ctx.user.org_id, ctx.user.role),
+        "user": user_dict(ctx.user),
+        "org": org_dict(ctx.org),
+        "permissions": ROLE_PERMISSIONS.get(ctx.user.role, []),
+    }

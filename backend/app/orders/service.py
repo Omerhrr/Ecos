@@ -103,7 +103,7 @@ def create_cart_order(
     if payment_method not in m.PAYMENT_METHODS:
         raise ValueError(f"Invalid payment method: {payment_method}")
 
-    resolved: list[tuple[cm.Product, int, float]] = []  # (product, qty, unit_price)
+    resolved: list[tuple[cm.Product, int, float, object]] = []  # (product, qty, unit_price, variant|None)
     for line in items:
         try:
             product_id = int(line.get("product_id") or 0)
@@ -115,15 +115,29 @@ def create_cart_order(
         product = db.get(cm.Product, product_id)
         if product is None:
             raise ValueError(f"Unknown product {product_id}")
+
+        variant = None
+        variant_id = line.get("variant_id")
+        if variant_id:
+            from app.catalog import models as cmv
+
+            variant = db.get(cmv.ProductVariant, int(variant_id))
+            if variant is None or variant.product_id != product.id or variant.status != "active":
+                raise ValueError(f"Invalid variant {variant_id} for product {product.id}")
+            if variant.stock < qty:
+                raise ValueError(f"Insufficient stock for variant {variant.sku}")
+
+        effective_cost = product.supplier_cost + (variant.cost_delta if variant else 0.0)
+        effective_weight = product.weight_kg + (variant.weight_delta_kg if variant else 0.0)
         if product.stock < qty:
             raise ValueError(f"Insufficient stock for product {product.id}")
         breakdown = price_product(
-            supplier_cost=product.supplier_cost, currency=product.currency,
-            weight_kg=product.weight_kg, markup_pct=product.markup_pct,
+            supplier_cost=effective_cost, currency=product.currency,
+            weight_kg=effective_weight, markup_pct=product.markup_pct,
         )
-        resolved.append((product, qty, breakdown.ecos_price_ngn))
+        resolved.append((product, qty, breakdown.ecos_price_ngn, variant))
 
-    items_total = sum(price * qty for _, qty, price in resolved)
+    items_total = sum(price * qty for _, qty, price, _ in resolved)
     order = m.Order(
         store_id=store_id, customer_id=customer_id, lead_id=lead_id,
         payment_method=payment_method, currency="NGN",
@@ -135,13 +149,29 @@ def create_cart_order(
     db.add(order)
     db.flush()
 
-    for product, qty, unit_price in resolved:
+    for product, qty, unit_price, variant in resolved:
+        label = None
+        if variant is not None:
+            label = (
+                f"{variant.option_name}: {variant.option_value}"
+                if variant.option_name else variant.option_value
+            )
         db.add(m.OrderItem(
-            order_id=order.id, product_id=product.id, title=product.title,
+            order_id=order.id, product_id=product.id,
+            variant_id=(variant.id if variant is not None else None),
+            variant_label=label,
+            title=(product.title if not label else f"{product.title} — {label}"),
             qty=qty, unit_price=unit_price,
-            supplier_cost_cny=product.supplier_cost, weight_kg=product.weight_kg,
+            supplier_cost_cny=(
+                product.supplier_cost + (variant.cost_delta if variant is not None else 0.0)
+            ),
+            weight_kg=(
+                product.weight_kg + (variant.weight_delta_kg if variant is not None else 0.0)
+            ),
         ))
         product.stock -= qty
+        if variant is not None:
+            variant.stock -= qty
 
     db.add(pm.Payment(
         order_id=order.id, method=payment_method, status="pending",
@@ -150,7 +180,7 @@ def create_cart_order(
 
     events.publish(db, "order.created", {
         "order_id": order.id, "store_id": store_id, "customer_id": customer_id,
-        "product_id": resolved[0][0].id, "qty": sum(q for _, q, _ in resolved),
+        "product_id": resolved[0][0].id, "qty": sum(q for _, q, _, _ in resolved),
         "line_count": len(resolved), "total_ngn": order.total,
         "payment_method": payment_method, "lead_id": lead_id, "source": source,
     })

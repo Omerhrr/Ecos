@@ -1,6 +1,6 @@
 # ECOS Build Status — Audit vs Plan (62 sections)
 
-Snapshot against `PLAN.md` after Task 9 (commit `981e600`).
+Snapshot against `PLAN.md` after Task 12 (catalog depth §10, COD register §24, LP versioning §15, token refresh §43).
 Legend: ✅ core built & verified · 🟡 partial (core exists, gaps listed) · ❌ not started · ◻ vision/context (no code implied).
 
 | § | Section | Status | Evidence / remaining gap |
@@ -14,12 +14,12 @@ Legend: ✅ core built & verified · 🟡 partial (core exists, gaps listed) · 
 | 7 | Core Domains | ✅ | Modular monolith, 22 routers, 33 tables — `automation/` is the only §7 domain with no module |
 | 8 | Supply Network | 🟡 | Suppliers + verification + products + POs done; supplier performance/communication not built |
 | 9 | Supplier Isolation | ✅ | `public_card()` leak-proof (no supplier/cost/margin on public API), browser-verified |
-| 10 | Product Catalog | 🟡 | Single-SKU products w/ images/specs/weight; variants/SKUs/videos missing |
+| 10 | Product Catalog | ✅ | Variants/SKUs (cost-delta repriced through the §12 waterfall), video media, per-variant stock guards, PDP option picker, admin variants/videos manager |
 | 11 | Product Discovery | ❌ | List + category filter only; no demand/margin-driven discovery |
 | 12 | Pricing Engine | 🟡 | Full waterfall (supplier→logistics→customs→payment→FX→risk→luxeen→operator→price); only % markup configurable |
 | 13 | Operator Store | ✅ | Store w/ branding, currency, country, products, pages |
 | 14 | Storefront Engine | ✅ | Public store/PDP/cart/checkout/order tracking; customer accounts & collections not built |
-| 15 | Landing Page Engine | ✅ | 9-block registry, editor, publish, theme/SEO, UTM tagging; versioning/scheduling/thumbnails deferred |
+| 15 | Landing Page Engine | ✅ | 9-block registry, editor with icon+accent palette thumbnails, immutable publish versions w/ rollback, scheduled auto-publish (60s scheduler), theme/SEO, UTM tagging |
 | 16 | Marketing Infrastructure | 🟡 | Campaigns + UTM last-touch + attribution report (CPA/CPL/conversion); no pixel/impressions/clicks/creatives |
 | 17 | CRM | ✅ | Pipeline incl. alternative paths, convert→order, storefront leads, campaign attribution |
 | 18 | Customer Intelligence | ❌ | Data accumulating (orders/RMAs/attributions); no intelligence features yet |
@@ -28,7 +28,7 @@ Legend: ✅ core built & verified · 🟡 partial (core exists, gaps listed) · 
 | 21 | Logistics Engine | ✅ | Shipments + normalized checkpoints, forward + reverse codes |
 | 22 | Logistics Abstraction | 🟡 | Carrier field + normalization layer; no route engine / multi-carrier integration |
 | 23 | Tracking | ✅ | Unified timeline (`TrackingEvent`, status/order maps) + public tracking page |
-| 24 | Cash on Delivery | 🟡 | COD default method, delivery auto-collect, ledger entries; courier remittance/reconciliation register missing |
+| 24 | Cash on Delivery | ✅ | COD default, delivery auto-collect, remittance register (open w/ auto-attach → submit → reconcile w/ line counting), double-entry cod_variance ledger true-up, payments stamped reconciled, /finance UI |
 | 25 | Payments | ✅ | Statuses, refund/void, ledger hooks, provider field; single internal gateway (interface ready) |
 | 26 | Financial Ledger | ✅ | Immutable signed entries for every money event incl. refunds |
 | 27 | Settlement Engine | ✅ | Ledger-derived runs, counterparty buckets, approve/execute/cancel/preview; holds/adjustments/disputes pending |
@@ -47,7 +47,7 @@ Legend: ✅ core built & verified · 🟡 partial (core exists, gaps listed) · 
 | 40 | Event-Driven Architecture | ✅ | Domain event bus, 25+ event types, 20+ subscriber handlers across domains |
 | 41 | Automation Engine | ✅ | `automation/` module: WHEN/AND/THEN rules on the event bus (25-event catalog, 11 condition ops, 4 action types incl. settlement-draft), cooldowns, dry-run test, per-rule SAVEPOINT isolation, full match audit + /automation UI |
 | 42 | Architecture Philosophy | ✅ | Folder structure mirrors §42 (fulfillment=warehouse, api=main.py) |
-| 43 | Identity & Tenancy | ✅ | Orgs, roles, per-domain permissions, cross-org isolation, platform staff scope |
+| 43 | Identity & Tenancy | ✅ | Orgs, roles, per-domain permissions, cross-org isolation, platform staff scope, token refresh (rotation endpoint + proactive 9h plugin + reactive 401 retry) |
 | 44 | Security & Audit | 🟡 | Event audit trail + AI run audit; prev/new state capture only on transitions |
 | 45 | Financial Integrity | ✅ | Immutable ledger, settlement stamping, no mutable money records |
 | 46 | Multi-Currency | ✅ | `fx_rates` table + conversion service (direct/inverse/triangulated/static), USD pricing page /pricing, storefront currency param, USD checkout display + FX snapshot on orders; ledger money stays in capture currency (NGN) by design (§45) |
@@ -68,15 +68,14 @@ Legend: ✅ core built & verified · 🟡 partial (core exists, gaps listed) · 
 | 61 | North-Star Definition | ◻ | Lives in the FastAPI app description |
 | 62 | Final System View | ◻ | Vision framing |
 
-**Score: 32 ✅ core · 13 🟡 partial · 7 ❌ not started · 12 ◻ vision/context**
+**Score: 35 ✅ core · 10 🟡 partial · 7 ❌ not started · 12 ◻ vision/context** (after Task 12)
 
 ---
 
-## Remaining engineering list (ranked, after Task 11)
+## Remaining engineering list (ranked, after Task 12)
 
-1. **COD remittance register (§24)** — courier remittance + reconciliation → ledger.
-2. **Catalog depth (§10)** — variants/SKUs, video media.
-3. **Landing page versioning/scheduling + block thumbnails (§15)** — deferred polish.
-4. **Auth token refresh (§43)** — deferred polish.
-5. **DeepSeek live key (§31)** — user-held; everything else is wired (drop key into `.env`, restart, harness flips live; `/ai/provider/test` + UI probe verify).
-6. **Later bets (§11, §18, §22, §47, §48, §53)** — demand-driven discovery, customer intelligence, route engine / multi-carrier, globalization config, network intelligence, Ascendra referral.
+1. **DeepSeek live key (§31)** — user-held; everything else is wired (drop key into `.env`, restart, harness flips live; `/ai/provider/test` + UI probe verify).
+2. **Operator depth (§34, §35)** — Launch Scribe full audience/angle flow, Lead Whisperer monitoring loop.
+3. **Security depth (§44)** — full before/after audit capture beyond transitions.
+4. **Settlement flexibility (§57)** — configurable settlement splits beyond the fixed waterfall.
+5. **Later bets (§11, §18, §22, §47, §48, §53)** — demand-driven discovery, customer intelligence, route engine / multi-carrier, globalization config, network intelligence, Ascendra referral.

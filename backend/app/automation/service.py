@@ -60,6 +60,8 @@ EVENT_CATALOG: list[dict[str, str]] = [
     {"name": "ai.run.completed", "label": "AI operator run completed", "sample": '{"operator": "Stock Prophet", "provider": "deepseek"}'},
     {"name": "ai.run.failed", "label": "AI operator run failed", "sample": '{"operator": "Stock Prophet", "error": "timeout"}'},
     {"name": "ai.proposal.approved", "label": "AI proposal approved", "sample": '{"operator": "Launch Scribe", "run_id": 9}'},
+    {"name": "cod.register_opened", "label": "COD remittance register opened", "sample": '{"register_id": 1, "carrier": "GIG Logistics", "expected_amount": 84000}'},
+    {"name": "cod.remittance_reconciled", "label": "COD remittance reconciled", "sample": '{"register_code": "CODR-00001", "carrier": "GIG Logistics", "variance_amount": -2000}'},
 ]
 
 EVENT_LABELS: dict[str, str] = {e["name"]: e["label"] for e in EVENT_CATALOG}
