@@ -59,3 +59,29 @@ class AiRun(Base):
     approved_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AiProviderSetting(Base):
+    """Harness brain configuration, editable at runtime (plan §31 key flow).
+
+    Singleton row (id=1). Storing the DeepSeek key here — obfuscated at rest
+    by core.secretbox — lets an admin paste the key in the admin UI and flip
+    the whole harness to live inference with NO restart. The env var
+    DEEPSEEK_API_KEY remains a valid fallback for headless deployments;
+    the database setting always wins when present.
+    """
+
+    __tablename__ = "ai_provider_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)  # singleton = 1
+    provider: Mapped[str] = mapped_column(String(40), default="deepseek")
+    api_key_enc: Mapped[str] = mapped_column(String(1024), default="")  # secretbox blob, "" = not set
+    model: Mapped[str] = mapped_column(String(60), default="")
+    base_url: Mapped[str] = mapped_column(String(255), default="")
+    updated_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+    # last provider test outcome (POST /ai/provider/test records it)
+    last_test_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_test_ok: Mapped[int | None] = mapped_column(Integer, nullable=True)  # sqlite-friendly bool | null = never
+    last_test_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_test_error: Mapped[str] = mapped_column(String(500), default="")

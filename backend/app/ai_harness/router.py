@@ -19,6 +19,13 @@ class DeployBody(BaseModel):
     code: str
 
 
+class ProviderSettingsBody(BaseModel):
+    """§31 key flow — api_key None = keep stored, "" = clear, value = replace."""
+    api_key: str | None = None
+    model: str | None = None
+    base_url: str | None = None
+
+
 class PatchBody(BaseModel):
     status: str | None = None
     system_prompt: str | None = None
@@ -42,12 +49,43 @@ def provider():
     "/provider/test",
     dependencies=[Depends(require_perm("ai_harness:write"))],
 )
-def provider_test():
-    """Live DeepSeek ping — 400 with setup instructions when no key is set."""
+def provider_test(db: Session = Depends(get_db)):
+    """Live DeepSeek ping — 400 with setup instructions when no key is set.
+    Outcome is recorded on the provider settings row (§31 key flow)."""
     try:
-        return llm.test_connection()
+        result = llm.test_connection()
     except RuntimeError as exc:
+        try:
+            llm.record_test_result(ok=False, latency_ms=None, error=str(exc))
+            db.commit()
+        except Exception:  # noqa: BLE001 — recording must never mask the real error
+            db.rollback()
         raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        llm.record_test_result(ok=True, latency_ms=result.get("latency_ms"))
+        db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
+    return result
+
+
+@router.put(
+    "/provider/settings",
+    dependencies=[Depends(require_perm("ai_harness:write"))],
+)
+def save_provider_settings(
+    body: ProviderSettingsBody,
+    db: Session = Depends(get_db),
+    ctx: AuthContext = Depends(require_perm("ai_harness:write")),
+):
+    """Store the DeepSeek key/model/base URL (obfuscated at rest) — the
+    harness flips to live inference on the very next call, no restart."""
+    llm.write_settings(
+        api_key=body.api_key, model=body.model, base_url=body.base_url,
+        updated_by=ctx.user.id,
+    )
+    db.commit()
+    return llm.provider_info()
 
 
 @router.get("/registry")

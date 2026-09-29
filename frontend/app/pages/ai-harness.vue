@@ -25,6 +25,41 @@ const testing = ref(false)
 const testOk = ref(false)
 const testMsg = ref('')
 
+// §31 key flow — paste a DeepSeek key, flips live with no restart
+const showKeyForm = ref(false)
+const keyInput = ref('')
+const keyModel = ref('')
+const keyBase = ref('')
+const savingKey = ref(false)
+const keyMsg = ref('')
+const keyOk = ref(false)
+
+async function saveProviderKey(clear = false) {
+  savingKey.value = true
+  keyMsg.value = ''
+  try {
+    const body: Record<string, unknown> = {}
+    if (clear) body.api_key = ''
+    else {
+      if (keyInput.value.trim()) body.api_key = keyInput.value.trim()
+      if (keyModel.value.trim()) body.model = keyModel.value.trim()
+      if (keyBase.value.trim()) body.base_url = keyBase.value.trim()
+      if (!Object.keys(body).length) { keyMsg.value = 'Nothing to save — paste a key first'; keyOk.value = false; return }
+    }
+    provider.value = await api.aiSaveProviderSettings(body)
+    keyOk.value = true
+    keyMsg.value = clear
+      ? 'Key cleared — harness is back on the heuristic fallback'
+      : `Saved — harness is now LIVE on ${provider.value.model} (${provider.value.key_source}), no restart needed`
+    if (!clear) { keyInput.value = ''; keyModel.value = ''; keyBase.value = '' }
+  }
+  catch (e: unknown) {
+    keyOk.value = false
+    keyMsg.value = (e as Error)?.data?.detail || (e as Error)?.message || 'Save failed'
+  }
+  finally { savingKey.value = false }
+}
+
 const products = ref<{ id: number; title: string }[]>([])
 const leads = ref<{ id: number; contact_name: string }[]>([])
 
@@ -91,7 +126,7 @@ async function testProvider() {
     testOk.value = false
     testMsg.value = (e as Error)?.data?.detail || (e as Error)?.message || 'test failed'
   }
-  finally { testing.value = false }
+  await load()
 }
 
 async function deploy(b: AiBlueprint) {
@@ -140,18 +175,54 @@ const pretty = (o: Record<string, unknown>) => JSON.stringify(o, null, 2)
         <span class="muted" style="margin-left:.5rem">
           model <span class="mono">{{ provider?.model }}</span>
           <template v-if="provider?.key_configured"> · {{ provider?.base_url }}</template>
+          <template v-if="provider?.key_configured && provider?.key_source">
+            · key <span class="mono">{{ provider.key_source }}</span>
+            <span v-if="provider?.key_hint" class="mono">{{ provider.key_hint }}</span>
+          </template>
         </span>
         <button class="small ghost" style="margin-left:.8rem" :disabled="testing" @click="testProvider">
           {{ testing ? 'Pinging…' : 'Test live key' }}
         </button>
+        <button class="small ghost" style="margin-left:.4rem" @click="showKeyForm = !showKeyForm">
+          {{ provider?.key_configured ? 'Manage key' : 'Add DeepSeek key' }}
+        </button>
         <span v-if="testMsg" class="mono" style="font-size:.74rem;margin-left:.6rem" :style="{ color: testOk ? '#00d68f' : '#f87171' }">{{ testMsg }}</span>
       </div>
       <div class="muted" style="font-size:.76rem">
-        <template v-if="provider?.key_configured">Live DeepSeek inference (§31).</template>
-        <template v-else>
-          No <span class="mono">DEEPSEEK_API_KEY</span> set — operators run on the deterministic
-          heuristic engine derived from live Ecos data. Add the key to the project-root <span class="mono">.env</span> and restart to switch to DeepSeek.
+        <template v-if="provider?.key_configured">
+          Live DeepSeek inference (§31).
+          <template v-if="provider?.last_test_ok === true">Last test <span style="color:#00d68f">passed</span>.</template>
+          <template v-else-if="provider?.last_test_ok === false">Last test <span style="color:#f87171">failed</span>: <span class="mono" style="font-size:.7rem">{{ provider?.last_test_error?.slice(0, 120) }}</span></template>
         </template>
+        <template v-else>
+          Operators run on the deterministic heuristic engine derived from live Ecos data.
+          Paste a DeepSeek key below (stored obfuscated in your own database) — or set
+          <span class="mono">DEEPSEEK_API_KEY</span> in <span class="mono">.env</span> — and the harness
+          flips to live inference instantly, no restart.
+        </template>
+      </div>
+      <div v-if="showKeyForm" class="keyform">
+        <label>
+          <span class="muted">API key</span>
+          <input v-model="keyInput" type="password" placeholder="sk-…" autocomplete="off" />
+        </label>
+        <label>
+          <span class="muted">Model</span>
+          <input v-model="keyModel" type="text" placeholder="deepseek-chat" />
+        </label>
+        <label>
+          <span class="muted">Base URL</span>
+          <input v-model="keyBase" type="text" placeholder="https://api.deepseek.com" />
+        </label>
+        <div class="row" style="gap:.4rem;align-items:center">
+          <button class="small" :disabled="savingKey" @click="saveProviderKey(false)">{{ savingKey ? 'Saving…' : 'Save key' }}</button>
+          <button v-if="provider?.key_configured && provider?.key_source === 'database'" class="small ghost" :disabled="savingKey" @click="saveProviderKey(true)">Clear key</button>
+          <span v-if="keyMsg" class="mono" style="font-size:.74rem" :style="{ color: keyOk ? '#00d68f' : '#f87171' }">{{ keyMsg }}</span>
+        </div>
+        <div class="muted" style="font-size:.7rem">
+          The key is encrypted at rest in your own database and is only ever sent to the provider
+          endpoint you configure. Leave model/base URL empty for the DeepSeek defaults.
+        </div>
       </div>
     </div>
 
@@ -293,6 +364,15 @@ const pretty = (o: Record<string, unknown>) => JSON.stringify(o, null, 2)
 <style scoped>
 .card.pad { padding: 1rem 1.2rem; }
 .prov { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.keyform {
+  flex-basis: 100%; display: flex; gap: .7rem; flex-wrap: wrap; align-items: flex-end;
+  border-top: 1px solid rgba(148, 163, 184, .16); padding-top: .8rem; margin-top: .2rem;
+}
+.keyform label { display: flex; flex-direction: column; gap: .25rem; flex: 1 1 180px; }
+.keyform input {
+  background: rgba(0, 0, 0, .3); border: 1px solid rgba(148, 163, 184, .25);
+  border-radius: 6px; color: inherit; padding: .4rem .6rem; font-size: .8rem;
+}
 .dot { display: inline-block; width: .55rem; height: .55rem; border-radius: 999px; background: #94a3b8; margin-right: .45rem; }
 .dot.live { background: #00b374; box-shadow: 0 0 8px rgba(0, 179, 116, .7); }
 .ops { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: .8rem; }

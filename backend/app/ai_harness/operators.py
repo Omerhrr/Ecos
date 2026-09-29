@@ -14,6 +14,7 @@ The harness (service.py) owns the run loop; blueprints stay pure.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from sqlalchemy import func as sa_func
@@ -673,6 +674,426 @@ def _heuristic_analyst(gathered: dict[str, Any]) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------
+# 10. Landing page operator — "Page Architect" (§34)
+# --------------------------------------------------------------------------
+
+CATEGORY_THEMES = {
+    "electronics": "#0ea5e9", "home-appliances": "#f59e0b", "fashion": "#ec4899",
+    "beauty": "#d946ef", "fitness": "#16a34a", "gadgets": "#8b5cf6",
+}
+
+
+def _age_hours(dt) -> float:
+    """SQLite-friendly age in hours (naive timestamps treated as UTC)."""
+    if dt is None:
+        return 0.0
+    now = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return max(0.0, (now - dt).total_seconds() / 3600.0)
+
+
+def _angle_for(price_ngn: float, units: int, repeat_share: float, source_mix: dict) -> tuple[str, str]:
+    """Deterministic selling-angle pick from live audience signals (§34)."""
+    paid = sum(v for k, v in source_mix.items() if k in ("meta_ads", "tiktok", "google_ads"))
+    total = sum(source_mix.values()) or 1
+    if repeat_share >= 0.30:
+        return "replenishment-loyalty", "a third or more of its buyers already came back — sell convenience and restock"
+    if price_ngn >= 25000:
+        return "premium-quality", f"ticket size ₦{price_ngn:,.0f} — buyers need quality justification, not discounting"
+    if paid / total >= 0.6:
+        return "problem-agitate-solve", "over 60% of its audience arrives from paid social — classic COD problem/solution flow"
+    if units == 0:
+        return "launch-value", "no sales yet — lead with an introductory value story"
+    return "value-cod", "steady organic interest — value-for-money plus COD trust converts this profile"
+
+
+def _gather_landing(db: Session, params: dict) -> dict[str, Any]:
+    p = db.get(cm.Product, int(params.get("product_id", 0)))
+    if p is None:
+        raise ValueError("product_id not found")
+    b = price_product(p.supplier_cost, "CNY", p.weight_kg, p.markup_pct)
+    sales = _sales_snapshot(db).get(p.id, {"units": 0, "revenue": 0.0})
+
+    leads = db.query(crm_m.Lead).filter(crm_m.Lead.product_id == p.id).all()
+    source_mix: dict[str, int] = {}
+    status_mix: dict[str, int] = {}
+    for l in leads:
+        source_mix[l.source] = source_mix.get(l.source, 0) + 1
+        status_mix[l.status] = status_mix.get(l.status, 0) + 1
+
+    # repeat buyers across the network, and which of this product's buyers repeat
+    repeat_ids = {
+        row[0] for row in (
+            db.query(om.Order.customer_id)
+            .filter(om.Order.status.notin_(["draft", "cancelled", "failed"]))
+            .group_by(om.Order.customer_id)
+            .having(sa_func.count(om.Order.id) >= 2)
+            .all()
+        ) if row[0] is not None
+    }
+    buyers = {
+        row[0] for row in (
+            db.query(om.Order.customer_id)
+            .join(om.OrderItem, om.OrderItem.order_id == om.Order.id)
+            .filter(
+                om.OrderItem.product_id == p.id,
+                om.Order.status.notin_(["draft", "cancelled", "failed"]),
+            )
+            .distinct().all()
+        ) if row[0] is not None
+    }
+    repeat_share = (len(buyers & repeat_ids) / len(buyers)) if buyers else 0.0
+
+    variants = [
+        {"id": v.id, "sku": v.sku, "option_name": v.option_name,
+         "option_value": v.option_value, "cost_delta": v.cost_delta, "stock": v.stock}
+        for v in db.query(cm.ProductVariant)
+        .filter(cm.ProductVariant.product_id == p.id, cm.ProductVariant.status == "active")
+        .all()
+    ]
+
+    angle, angle_why = _angle_for(b.ecos_price_ngn, sales["units"], repeat_share, source_mix)
+    if params.get("angle"):
+        angle = str(params["angle"])[:40]
+
+    return {
+        "product": {
+            "id": p.id, "title": p.title, "slug": p.slug, "category": p.category,
+            "description": p.description, "specs": p.specs, "stock": p.stock,
+            "price_ngn": b.ecos_price_ngn,
+            "image": p.images[0] if p.images else f"https://picsum.photos/seed/{p.slug}/1600/900",
+        },
+        "audience": {
+            "lead_sources": source_mix, "lead_statuses": status_mix,
+            "buyers": len(buyers), "repeat_buyer_share": round(repeat_share, 2),
+            "units_sold": sales["units"],
+            "angle": angle, "angle_rationale": angle_why,
+            "angle_hint_from_operator": params.get("angle") or None,
+        },
+        "variants": variants,
+    }
+
+
+def _heuristic_landing(gathered: dict[str, Any]) -> dict[str, Any]:
+    p, aud = gathered["product"], gathered["audience"]
+    angle = aud["angle"]
+    slug = p["slug"] or f"product-{p['id']}"
+    cat = (p["category"] or "electronics").lower()
+    theme = {"primary": CATEGORY_THEMES.get(cat, "#0ea5e9")}
+    utm = f"?utm_source=lp&utm_medium={angle}&utm_campaign={slug}-launch"
+    href = f"/products/{slug}{utm}"
+
+    angle_copy = {
+        "replenishment-loyalty": (
+            f"{p['title']} — back in stock, because you asked",
+            f"You already know it: {p['title']} keeps selling out. ₦{p['price_ngn']:,.0f}, pay cash on delivery.",
+        ),
+        "premium-quality": (
+            f"{p['title']} — built to outlast the price tag",
+            f"A ₦{p['price_ngn']:,.0f} investment in quality you can verify on delivery — before you pay a naira.",
+        ),
+        "problem-agitate-solve": (
+            f"Still struggling with {cat.replace('-', ' ')} that disappoint?",
+            f"{p['title']} fixes it — ₦{p['price_ngn']:,.0f}, checked at your door, pay only when it delivers.",
+        ),
+        "launch-value": (
+            f"New: {p['title']} — launch price",
+            f"First batch just landed from our China network. ₦{p['price_ngn']:,.0f} — pay on delivery.",
+        ),
+    }.get(angle, (
+        f"{p['title']} — delivered to your door",
+        f"₦{p['price_ngn']:,.0f} — quality-checked, tracked, and you pay cash on delivery.",
+    ))
+    headline, subheadline = angle_copy
+
+    specs = p.get("specs") or {}
+    feature_items = "\n".join(
+        f"★ | {k.replace('_', ' ').title()} | {v}" for k, v in list(specs.items())[:6]
+    ) or "★ | Quality checked | Every unit is inspected before it leaves our China hub"
+
+    blocks = [
+        {"type": "hero", "headline": headline, "subheadline": subheadline,
+         "cta_label": "Order now — pay on delivery", "cta_href": href, "image": p["image"]},
+        {"type": "trust_badges",
+         "items": "💵 | Pay on delivery\n🚚 | Tracked door-to-door\n↩️ | 7-day returns\n✅ | Quality checked"},
+        {"type": "image_text", "image": p["image"], "image_side": "right",
+         "title": f"Why the {p['title']} works",
+         "body": (p["description"] or f"The {p['title']} is sourced through the Ecos China→Nigeria network.") +
+                 " Every unit ships with door-to-door tracking, and payment happens only when it arrives."},
+    ]
+    if feature_items:
+        blocks.append({"type": "feature_grid", "title": "What you get", "items": feature_items})
+    blocks.extend([
+        {"type": "testimonials", "title": "Buyers across Nigeria",
+         "items": ("Chidi, Lagos | Paid on delivery and the item matched the photos exactly.\n"
+                   "Amina, Abuja | Arrived in 9 days with tracking the whole way.\n"
+                   "Tunde, Ibadan | The return window made trying it risk-free.")},
+        {"type": "faq", "title": "Questions, answered",
+         "items": ("When do I pay? | Only when the order reaches your door — cash on delivery.\n"
+                   "How long is delivery? | Typically 7-14 days from our China hub, fully tracked.\n"
+                   "What if I don't like it? | You have 7 days to return it, no questions asked.\n"
+                   "Is it original? | Every unit is quality-checked before shipping.")},
+        {"type": "cta", "title": "Ready when you are",
+         "body": f"₦{p['price_ngn']:,.0f} — {subheadline.split('—')[-1].strip()}",
+         "cta_label": "Order now — pay on delivery", "cta_href": href},
+        {"type": "product_showcase", "title": "More from the store", "mode": "latest", "limit": "3"},
+    ])
+
+    return {
+        "page": {
+            "title": f"{p['title']} — {angle.replace('-', ' ').title()} page",
+            "slug": slug, "theme": theme, "blocks": blocks,
+            "seo": {
+                "title": f"{p['title']} | Pay on delivery in Nigeria",
+                "description": subheadline[:160],
+            },
+        },
+        "selling_angle": {"angle": angle, "audience": aud, "rationale": aud["angle_rationale"]},
+        "tracking": {
+            "utm_source": "lp", "utm_medium": angle, "utm_campaign": f"{slug}-launch",
+            "cta_href": href,
+            "note": "CTAs carry UTM so §16 attribution credits this page's traffic and orders.",
+        },
+        "copy_notes": (
+            f"{angle.replace('-', ' ').title()} angle: {aud['angle_rationale']}. "
+            "COD trust signals (pay-on-delivery, returns, tracking) repeated at hero, badges, FAQ and final CTA."
+        ),
+        "summary": (
+            f"Full landing page for {p['title']} using the {angle.replace('-', ' ')} angle: "
+            f"{len(blocks)} blocks, UTM-tagged CTAs, ready to edit and publish."
+        ),
+    }
+
+
+def _apply_landing(db: Session, operator, output: dict, actor: dict) -> dict[str, Any]:
+    from app.landing_pages.blocks import sanitize_blocks  # local: cycle-safe
+
+    product = db.get(cm.Product, output.get("_product_id", 0))
+    if product is None:
+        raise ValueError("proposal product no longer exists")
+    page_prop = output.get("page") or {}
+    raw_blocks = page_prop.get("blocks") or []
+    clean_blocks, errors = sanitize_blocks(raw_blocks)
+    if errors:
+        raise ValueError("AI page failed block validation: " + "; ".join(errors[:5]))
+    if not clean_blocks:
+        raise ValueError("AI page proposal contained no usable blocks")
+
+    base_slug = page_prop.get("slug") or product.slug or f"product-{product.id}"
+    page = lpm.LandingPage(
+        org_id=operator.org_id,
+        slug=_unique_page_slug(db, f"{re.sub(r'[^a-z0-9-]+', '-', base_slug.lower()).strip('-') or 'product'}-ai"),
+        title=(page_prop.get("title") or f"{product.title} — AI page")[:255],
+        status="draft",  # §34: the operator reviews/modifies/publishes in the editor
+        blocks=clean_blocks,
+        theme=page_prop.get("theme") or {"primary": "#0ea5e9"},
+        seo=page_prop.get("seo") or {"title": product.title, "description": ""},
+        created_by=actor.get("user_id"),
+    )
+    db.add(page)
+    db.flush()
+    events.publish(db, "landing_page.created", {
+        "page_id": page.id, "slug": page.slug, "org_id": operator.org_id,
+        "source": "ai_landing_page_architect",
+    })
+    return {
+        "landing_page_id": page.id, "slug": page.slug, "status": "draft",
+        "block_count": len(clean_blocks),
+        "next_step": "Landing Pages → open the draft → edit → publish (or schedule)",
+    }
+
+
+# --------------------------------------------------------------------------
+# 11. Customer operations operator — "Customer Sentinel" (§35)
+# --------------------------------------------------------------------------
+
+def _gather_customer_ops(db: Session, params: dict) -> dict[str, Any]:
+    from app.returns import models as rm  # cycle-safe local import
+    from app.storefront import models as stm
+
+    stale_lead_days = float(params.get("stale_lead_days", 2) or 2)
+    stale_order_hours = float(params.get("stale_order_hours", 12) or 12)
+
+    leads = db.query(crm_m.Lead).all()
+    products = {p.id: p.title for p in db.query(cm.Product).all()}
+    orders = db.query(om.Order).all()
+    order_creators = {}
+    for o in orders:
+        order_creators.setdefault(o.lead_id, o.id)
+
+    def lead_item(l: crm_m.Lead) -> dict:
+        return {"lead_id": l.id, "name": l.contact_name, "phone": l.contact_phone,
+                "product": products.get(l.product_id), "status": l.status,
+                "age_hours": round(_age_hours(l.created_at), 1)}
+
+    by_status: dict[str, list] = {}
+    for l in leads:
+        by_status.setdefault(l.status, []).append(l)
+
+    new_leads = [lead_item(l) for l in sorted(by_status.get("new", []), key=lambda x: x.created_at)]
+    abandoned = [
+        lead_item(l) for l in sorted(by_status.get("contacted", []) + by_status.get("interested", []),
+                                     key=lambda x: x.created_at)
+        if _age_hours(l.created_at) >= stale_lead_days * 24 and l.id not in order_creators
+    ]
+    unreachable = [lead_item(l) for l in by_status.get("unreachable", [])]
+
+    pending = [
+        {"order_id": o.id, "customer_id": o.customer_id, "total": o.total,
+         "age_hours": round(_age_hours(o.created_at), 1), "stale": _age_hours(o.created_at) > stale_order_hours}
+        for o in sorted(orders, key=lambda x: x.created_at)
+        if o.status == "pending_confirmation"
+    ]
+    failed = [
+        {"order_id": o.id, "total": o.total, "age_hours": round(_age_hours(o.created_at), 1)}
+        for o in sorted(orders, key=lambda x: x.created_at) if o.status == "failed"
+    ]
+
+    # repeat customers (2+ live orders) with spend
+    spend: dict[int, float] = {}
+    count: dict[int, int] = {}
+    for o in orders:
+        if o.status in ("draft", "cancelled", "failed"):
+            continue
+        spend[o.customer_id] = spend.get(o.customer_id, 0.0) + (o.total or 0.0)
+        count[o.customer_id] = count.get(o.customer_id, 0) + 1
+    repeat = [
+        {"customer_id": cid, "orders": n, "lifetime_spend": round(spend[cid], 2)}
+        for cid, n in sorted(count.items(), key=lambda kv: -kv[1]) if n >= 2
+    ]
+
+    open_rmaseq = (
+        db.query(rm.ReturnOrder)
+        .filter(rm.ReturnOrder.status.in_(["requested", "approved"]))
+        .order_by(rm.ReturnOrder.created_at.asc()).all()
+    )
+    support = [
+        {"rma_id": r.id, "rma_number": r.rma_number, "order_id": r.order_id,
+         "reason": r.reason, "status": r.status,
+         "age_hours": round(_age_hours(r.created_at), 1)}
+        for r in open_rmaseq
+    ]
+
+    store_org = {s.id: s.org_id for s in db.query(stm.Store).all()}
+    buckets = {
+        "new_leads": new_leads, "abandoned_opportunities": abandoned,
+        "pending_confirmations": pending, "unreachable_customers": unreachable,
+        "failed_deliveries": failed, "repeat_customers": repeat[:10],
+        "support_issues": support,
+    }
+    # pick the org owning the most orders (service auto-copies {"org": {"id":..}}
+    # onto the output as _org_id for the apply step)
+    orders_per_org: dict[int, int] = {}
+    for o in orders:
+        org = store_org.get(o.store_id)
+        if org is not None:
+            orders_per_org[org] = orders_per_org.get(org, 0) + 1
+    if not orders_per_org and store_org:
+        orders_per_org[next(iter(store_org.values()))] = 0
+    top_org = max(orders_per_org, key=lambda k: orders_per_org[k]) if orders_per_org else None
+    return {
+        "org": {"id": top_org} if top_org else {},
+        "buckets": buckets,
+        "thresholds": {"stale_lead_days": stale_lead_days, "stale_order_hours": stale_order_hours},
+    }
+
+
+def _heuristic_customer_ops(gathered: dict[str, Any]) -> dict[str, Any]:
+    b = gathered["buckets"]
+    labels = {
+        "new_leads": ("New leads awaiting first contact", "info",
+                      "Call each new lead today — conversion decays fast after the first hour."),
+        "abandoned_opportunities": ("Abandoned opportunities", "warning",
+                                    "Re-engage with a short nudge: stock is limited, COD still available."),
+        "pending_confirmations": ("Pending confirmations", "warning",
+                                  "Confirm or release stale orders — every idle COD order blocks inventory."),
+        "unreachable_customers": ("Unreachable customers", "critical",
+                                  "Attempt a different channel (WhatsApp), then close as lost after 3 tries."),
+        "failed_deliveries": ("Failed deliveries", "critical",
+                              "Coordinate re-delivery with the courier before the customer complains."),
+        "repeat_customers": ("Repeat customers", "success",
+                             "Send a WhatsApp re-engagement blast with a returning-customer bundle."),
+        "support_issues": ("Open support issues (RMAs)", "warning",
+                           "Approve/reject pending RMAs today — silent RMAs poison trust and reviews."),
+    }
+    watchlist = []
+    for key, (label, priority, action) in labels.items():
+        items = b.get(key) or []
+        watchlist.append({
+            "bucket": key, "label": label, "priority": priority,
+            "count": len(items), "recommended_action": action, "items": items[:8],
+        })
+    playbook = [
+        {"action": "notify_ops", "bucket": w["bucket"], "priority": w["priority"],
+         "message": w["recommended_action"]}
+        for w in watchlist if w["count"] > 0 and w["priority"] in ("critical", "warning")
+    ]
+    hot = [w for w in watchlist if w["priority"] == "critical" and w["count"] > 0]
+    active = [w for w in watchlist if w["count"] > 0]
+    summary = (
+        f"{len(hot)} critical bucket(s)"
+        + (": " + ", ".join(f"{w['label']} ({w['count']})" for w in hot) + ". " if hot else ". ")
+        + "Watchlist: "
+        + (", ".join(f"{w['label']} {w['count']}" for w in active) or "all clear")
+        + "."
+    )
+    return {
+        "watchlist": watchlist, "playbook": playbook,
+        "totals": {key: len(b.get(key) or []) for key in labels},
+        "summary": summary,
+    }
+
+
+def _apply_customer_ops(db: Session, operator, output: dict, actor: dict) -> dict[str, Any]:
+    from app.notifications import service as notif_svc  # cycle-safe local import
+
+    org_id = output.get("_org_id") or operator.org_id
+    playbook = output.get("playbook") or []
+    executed = []
+    notified = 0
+    for step in playbook:
+        bucket = step.get("bucket")
+        watch = next((w for w in output.get("watchlist", []) if w.get("bucket") == bucket), None)
+        if not watch or not watch.get("count"):
+            continue
+        level = {"critical": "critical", "warning": "warning", "success": "success"}.get(
+            watch.get("priority"), "info")
+        lines = []
+        for item in (watch.get("items") or [])[:5]:
+            if bucket in ("pending_confirmations",):
+                lines.append(f"Order #{item.get('order_id')} — ₦{item.get('total', 0):,.0f}, waiting {item.get('age_hours', 0):.0f}h")
+            elif bucket in ("new_leads", "abandoned_opportunities", "unreachable_customers"):
+                lines.append(f"{item.get('name')} ({item.get('phone')}) — {item.get('product') or 'product'}, {item.get('status')}")
+            elif bucket == "failed_deliveries":
+                lines.append(f"Order #{item.get('order_id')} failed delivery")
+            elif bucket == "support_issues":
+                lines.append(f"{item.get('rma_number')} — {item.get('reason')} ({item.get('status')})")
+            elif bucket == "repeat_customers":
+                lines.append(f"Customer #{item.get('customer_id')} — {item.get('orders')} orders, ₦{item.get('lifetime_spend', 0):,.0f}")
+        title = f"Customer Ops — {watch.get('label')}: {watch.get('count')}"
+        body = (watch.get("recommended_action") or "") + ("\n" + "\n".join(lines) if lines else "")
+        category = {
+            "pending_confirmations": "orders", "failed_deliveries": "shipments",
+            "support_issues": "returns", "repeat_customers": "crm",
+        }.get(bucket, "crm")
+        rows = notif_svc.notify(
+            db, org_id=org_id, category=category, level=level,
+            title=title, body=body[:1024],
+            entity_type="ai_run", entity_id=step.get("run_id"),
+            meta={"source": "customer_sentinel", "bucket": bucket},
+        )
+        notified += len(rows)
+        executed.append({"bucket": bucket, "action": "notify_ops", "level": level,
+                         "notifications": len(rows)})
+
+    return {
+        "actions_executed": executed, "notifications_sent": notified,
+        "note": "Playbook = safe ops notifications. Calls/re-deliveries stay human (§39 governance).",
+    }
+
+
+# --------------------------------------------------------------------------
 # Registry
 # --------------------------------------------------------------------------
 
@@ -826,6 +1247,50 @@ BLUEPRINTS: dict[str, dict[str, Any]] = {
             "totals and order stats, produce a digest: highlights, risks, recommendations, metrics. "
             "Respond ONLY with JSON: {\"highlights\": [str], \"risks\": [str], \"recommendations\": [str], "
             "\"metrics\": {...}, \"summary\": str}"
+        ),
+    },
+    "landing_page_architect": {
+        "code": "landing_page_architect",
+        "name": "Page Architect",
+        "role_description": "Builds a complete landing page — angle, copy, blocks, CTA, UTM tracking — from a product; approval files it as an editable draft (§34).",
+        "advisory": False,
+        "input_fields": [
+            {"key": "product_id", "label": "Product", "type": "number", "required": True},
+            {"key": "angle", "label": "Selling angle override (optional)", "type": "text", "required": False,
+             "placeholder": "value-cod | premium-quality | problem-agitate-solve | launch-value | replenishment-loyalty"},
+        ],
+        "gather": _gather_landing,
+        "heuristic": _heuristic_landing,
+        "apply": _apply_landing,
+        "task_brief": (
+            "You are Page Architect, a conversion landing-page designer for COD e-commerce. "
+            "Using the product and audience snapshot, pick the strongest selling angle and compose "
+            "a full page: hero, trust badges, image+text story, feature grid, testimonials, FAQ, "
+            "closing CTA and a product showcase. Every CTA carries the tracking UTM. Respond ONLY "
+            "with JSON: {\"page\": {\"title\": str, \"slug\": str, \"theme\": {\"primary\": str}, "
+            "\"blocks\": [{\"type\": str, ...fields}], \"seo\": {...}}, \"selling_angle\": {...}, "
+            "\"tracking\": {...}, \"copy_notes\": str, \"summary\": str}"
+        ),
+    },
+    "customer_ops": {
+        "code": "customer_ops",
+        "name": "Customer Sentinel",
+        "role_description": "Watches the 7 customer-operations buckets — new leads, abandoned opportunities, pending confirmations, unreachable customers, failed deliveries, repeat customers, support issues — and runs the safe ops playbook on approval (§35).",
+        "advisory": False,
+        "input_fields": [
+            {"key": "stale_lead_days", "label": "Stale lead threshold (days)", "type": "number", "required": False},
+            {"key": "stale_order_hours", "label": "Stale order threshold (hours)", "type": "number", "required": False},
+        ],
+        "gather": _gather_customer_ops,
+        "heuristic": _heuristic_customer_ops,
+        "apply": _apply_customer_ops,
+        "task_brief": (
+            "You are Customer Sentinel, the customer-operations watcher. Using the bucket snapshot, "
+            "prioritise what needs action today and produce a watchlist with a recommended action "
+            "per bucket, plus a safe playbook (ops notifications only). Respond ONLY with JSON: "
+            "{\"watchlist\": [{\"bucket\": str, \"label\": str, \"priority\": str, \"count\": int, "
+            "\"recommended_action\": str, \"items\": [...]}], \"playbook\": [{\"action\": str, "
+            "\"bucket\": str, \"message\": str}], \"totals\": {...}, \"summary\": str}"
         ),
     },
 }

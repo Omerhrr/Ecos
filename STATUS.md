@@ -35,11 +35,11 @@ Legend: ✅ core built & verified · 🟡 partial (core exists, gaps listed) · 
 | 28 | Returns & Refunds | ✅ | RMA state machine, restock→warehouse movements, ledger refunds; inspection/replacement flows light |
 | 29 | Analytics | ✅ | Dashboard KPIs + attribution + three operator suites (§29): logistics (transit/carrier/stalls), financial (contribution economics from ledger), product (margin/returns/cover) + /analytics page |
 | 30 | Command Center | 🟡 | Dashboard + notification feed + automation escalations; no unified "what needs attention" AI surface yet |
-| 31 | Ecos Harness | ✅* | Operator registry, runs w/ token/latency audit, human-in-loop governance, live-key path hardened (env read at call time, retries, /ai/provider/test, UI probe) — *runs on heuristic fallback until DEEPSEEK_API_KEY is set |
+| 31 | Ecos Harness | ✅ | 11-operator bench, runs w/ token/latency audit, human-in-loop governance; **key flow complete**: DB-stored key (obfuscated at rest) editable from the admin UI flips live instantly (no restart), env var fallback, provider test w/ recorded outcome, masked key hints — set a key and the whole bench goes live DeepSeek |
 | 32 | Product Research Operator | ✅ | "Market Scout" — velocity/margin/category-gap scan, advisory; live prose once key is set |
 | 33 | Product Import Operator | ✅ | "Catalog Forger" — parses raw supplier listing → waterfall-priced DRAFT product on approval (human activates in Catalog) |
-| 34 | Landing Page Operator | 🟡 | Launch Scribe generates draft page/copy via §15 engine; not full audience/angle/tracking flow |
-| 35 | Customer Operations Operator | 🟡 | Lead Whisperer drafts replies + status flips; not full monitoring loop |
+| 34 | Landing Page Operator | ✅ | **Page Architect**: audience analysis (lead sources, repeat-buyer share) → selling-angle pick (5 deterministic data-driven angles) → full 8-block page (hero/badges/story/features/testimonials/FAQ/CTA/showcase) → UTM-tagged CTAs (§16 handshake) → approval files an editable §15 draft (sanitized blocks, unique slugs) |
+| 35 | Customer Operations Operator | ✅ | **Customer Sentinel**: monitors all 7 buckets (new leads, abandoned opportunities, pending confirmations, unreachable, failed deliveries, repeat customers, support issues/RMAs) w/ per-bucket recommended actions; approval executes the safe ops playbook (real notifications, critical escalation); calls/deliveries stay human per §39 |
 | 36 | Growth Operator | ✅ | "Growth Pilot" — CPA-ranked budget moves (scale/fix/pause/investigate) from the live attribution report; advisory |
 | 37 | Logistics Operator | ✅ | "Route Guard" — checkpoint-freshness SLA scan; approval raises ops escalation notifications |
 | 38 | Business Analyst Operator | ✅ | "P&L Analyst" — ledger-grounded digest: highlights, risks, recommendations, metrics; advisory |
@@ -68,14 +68,13 @@ Legend: ✅ core built & verified · 🟡 partial (core exists, gaps listed) · 
 | 61 | North-Star Definition | ◻ | Lives in the FastAPI app description |
 | 62 | Final System View | ◻ | Vision framing |
 
-**Score: 35 ✅ core · 10 🟡 partial · 7 ❌ not started · 12 ◻ vision/context** (after Task 12)
+**Score: 37 ✅ core · 8 🟡 partial · 7 ❌ not started · 12 ◻ vision/context** (after Task 13)
 
 ---
 
 ## Remaining engineering list (ranked, after Task 12)
 
-1. **DeepSeek live key (§31)** — user-held; everything else is wired (drop key into `.env`, restart, harness flips live; `/ai/provider/test` + UI probe verify).
-2. **Operator depth (§34, §35)** — Launch Scribe full audience/angle flow, Lead Whisperer monitoring loop.
-3. **Security depth (§44)** — full before/after audit capture beyond transitions.
-4. **Settlement flexibility (§57)** — configurable settlement splits beyond the fixed waterfall.
-5. **Later bets (§11, §18, §22, §47, §48, §53)** — demand-driven discovery, customer intelligence, route engine / multi-carrier, globalization config, network intelligence, Ascendra referral.
+1. **Security depth (§44)** — full before/after audit capture beyond transitions.
+2. **Settlement flexibility (§57)** — configurable settlement splits beyond the fixed waterfall.
+3. **DeepSeek live key (§31)** — flow complete; paste a real key in AI Harness → Provider (or env) whenever Luxeen supplies it.
+4. **Later bets (§11, §18, §22, §47, §48, §53)** — demand-driven discovery, customer intelligence, route engine / multi-carrier, globalization config, network intelligence, Ascendra referral.

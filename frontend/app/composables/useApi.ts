@@ -456,7 +456,14 @@ export interface AiProviderInfo {
   provider: 'deepseek' | 'heuristic-fallback'
   model: string
   key_configured: boolean
+  key_source: 'database' | 'env' | null
+  key_hint: string | null
   base_url: string | null
+  last_test_ok: boolean | null
+  last_test_at: string | null
+  last_test_latency_ms: number | null
+  last_test_error: string
+  live_instructions: string | null
 }
 
 export interface Summary {
@@ -1131,6 +1138,8 @@ export function useApi() {
     aiProvider: () => req<AiProviderInfo>('/api/ai/provider'),
     aiProviderTest: () =>
       req<{ ok: boolean; model: string; latency_ms: number; reply: string }>('/api/ai/provider/test', { method: 'POST', body: {} }),
+    aiSaveProviderSettings: (body: { api_key?: string | null; model?: string | null; base_url?: string | null }) =>
+      req<AiProviderInfo>('/api/ai/provider/settings', { method: 'PUT', body }),
     aiRegistry: () => req<AiBlueprint[]>('/api/ai/registry'),
     aiOperators: () => req<AiOperator[]>('/api/ai/operators'),
     deployAiOperator: (code: string) =>

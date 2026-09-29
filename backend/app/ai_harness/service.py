@@ -146,6 +146,16 @@ def reject_run(db: Session, run: m.AiRun, *, actor: dict, note: str = "") -> m.A
 def deploy_operator(db: Session, *, code: str, org_id: int | None, actor: dict) -> m.AiOperator:
     if code not in ops.BLUEPRINTS:
         raise ValueError(f"Unknown operator blueprint: {code}")
+    # Idempotent deploy: an org runs exactly one operator per blueprint code.
+    # Re-deploying (API retry, smoke, ensure-backfill) returns the existing row.
+    if org_id is not None:
+        existing = (
+            db.query(m.AiOperator)
+            .filter(m.AiOperator.org_id == org_id, m.AiOperator.code == code)
+            .first()
+        )
+        if existing is not None:
+            return existing
     blueprint = ops.BLUEPRINTS[code]
     operator = m.AiOperator(
         org_id=org_id, code=code, name=blueprint["name"],
