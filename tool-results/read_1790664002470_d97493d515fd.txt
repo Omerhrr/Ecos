@@ -1,0 +1,832 @@
+     1→"""Built-in AI operator blueprints (plan §31-34).
+     2→
+     3→Each blueprint is a narrow, auditable role:
+     4→
+     5→    gather()  reads live Ecos state and packs it into the prompt context —
+     6→              plus a deterministic `[[HEURISTIC]]` payload the fallback
+     7→              engine uses when no DeepSeek key is configured.
+     8→    apply()   the governed side effect executed ONLY after a human approves
+     9→              the run's proposal (§37-38). Advisory blueprints never mutate.
+    10→
+    11→The harness (service.py) owns the run loop; blueprints stay pure.
+    12→"""
+    13→
+    14→from __future__ import annotations
+    15→
+    16→import re
+    17→from typing import Any, Callable
+    18→
+    19→from sqlalchemy import func as sa_func
+    20→from sqlalchemy.orm import Session
+    21→
+    22→from app.catalog import models as cm
+    23→from app.core import events
+    24→from app.core.pricing import FX_RATES, LOGISTICS_NGN_PER_KG, PAYMENT_COST_PCT, LUXEEN_MARGIN_PCT, price_product
+    25→from app.crm import models as crm_m
+    26→from app.landing_pages import models as lpm
+    27→from app.orders import models as om
+    28→from app.supply import models as sm
+    29→
+    30→GatherFn = Callable[[Session, dict], dict[str, Any]]
+    31→ApplyFn = Callable[[Session, Any, dict, dict], dict[str, Any]]
+    32→
+    33→
+    34→def _sales_snapshot(db: Session) -> dict[int, dict]:
+    35→    """units + revenue per product across non-cancelled orders."""
+    36→    rows = (
+    37→        db.query(
+    38→            om.OrderItem.product_id,
+    39→            sa_func.sum(om.OrderItem.qty).label("units"),
+    40→            sa_func.sum(om.OrderItem.qty * om.OrderItem.unit_price).label("revenue"),
+    41→        )
+    42→        .join(om.Order, om.Order.id == om.OrderItem.order_id)
+    43→        .filter(om.Order.status.notin_(["draft", "cancelled", "failed"]))
+    44→        .group_by(om.OrderItem.product_id)
+    45→        .all()
+    46→    )
+    47→    return {r.product_id: {"units": int(r.units or 0), "revenue": float(r.revenue or 0.0)} for r in rows}
+    48→
+    49→
+    50→def _unique_page_slug(db: Session, base: str) -> str:
+    51→    base = re.sub(r"[^a-z0-9-]+", "-", base.lower()).strip("-") or "ai-page"
+    52→    slug, n = base, 2
+    53→    while db.query(lpm.LandingPage).filter(lpm.LandingPage.slug == slug).count():
+    54→        slug = f"{base}-ai-{n}"
+    55→        n += 1
+    56→    return slug
+    57→
+    58→
+    59→# --------------------------------------------------------------------------
+    60→# 1. Pricing analyst — "Margin Sentinel" (§33 pricing domain support)
+    61→# --------------------------------------------------------------------------
+    62→
+    63→def _gather_pricing(db: Session, params: dict) -> dict[str, Any]:
+    64→    sales = _sales_snapshot(db)
+    65→    products = db.query(cm.Product).filter(cm.Product.status == "active").all()
+    66→    recs = []
+    67→    for p in products:
+    68→        s = sales.get(p.id, {"units": 0, "revenue": 0.0})
+    69→        b = price_product(p.supplier_cost, "CNY", p.weight_kg, p.markup_pct)
+    70→        current = b.ecos_price_ngn
+    71→        if s["units"] == 0 and p.stock > 50:
+    72→            factor, why = 0.92, "no sales yet with healthy stock — stimulate demand"
+    73→        elif s["units"] >= 10:
+    74→            factor, why = 1.06, "demand is proven (10+ units) — capture more margin"
+    75→        else:
+    76→            factor, why = 1.0, "early signal — hold price and observe"
+    77→        suggested = round(current * factor / 5) * 5
+    78→        cost = b.supplier_cost_ngn
+    79→        base = cost + b.logistics_ngn + b.payment_cost_ngn + b.luxeen_margin_ngn
+    80→        markup = (suggested - base) / cost if cost else p.markup_pct
+    81→        recs.append({
+    82→            "product_id": p.id, "product_title": p.title,
+    83→            "current_price_ngn": current, "suggested_price_ngn": suggested,
+    84→            "units_sold": s["units"], "stock": p.stock,
+    85→            "margin_pct_current": round((current - base) / current * 100, 1) if current else 0,
+    86→            "rationale": why,
+    87→        })
+    88→        # stash the inverse-computed markup for apply()
+    89→        recs[-1]["_markup_pct"] = round(markup, 4)
+    90→    return {"products": recs}
+    91→
+    92→
+    93→def _heuristic_pricing(gathered: dict[str, Any]) -> dict[str, Any]:
+    94→    recs = [{k: v for k, v in r.items() if not k.startswith("_")} for r in gathered["products"]]
+    95→    changes = [r for r in recs if r["suggested_price_ngn"] != r["current_price_ngn"]]
+    96→    return {
+    97→        "analysis": "Margin + velocity scan across the active catalog.",
+    98→        "recommendations": recs,
+    99→        "summary": (
+   100→            f"{len(changes)} of {len(recs)} products merit a price move; "
+   101→            f"{len(recs) - len(changes)} hold steady."
+   102→        ),
+   103→    }
+   104→
+   105→
+   106→def _apply_pricing(db: Session, operator, output: dict, actor: dict) -> dict[str, Any]:
+   107→    applied = []
+   108→    for r in output.get("recommendations", []):
+   109→        p = db.get(cm.Product, r.get("product_id"))
+   110→        suggested = r.get("suggested_price_ngn")
+   111→        if p and suggested:
+   112→            # recompute the markup that hits the approved price against
+   113→            # CURRENT costs (they may have drifted since the run)
+   114→            b = price_product(p.supplier_cost, "CNY", p.weight_kg, p.markup_pct)
+   115→            if b.ecos_price_ngn == suggested:
+   116→                continue  # no move proposed for this product
+   117→            base = (b.supplier_cost_ngn + b.logistics_ngn
+   118→                    + b.payment_cost_ngn + b.luxeen_margin_ngn)
+   119→            if b.supplier_cost_ngn:
+   120→                p.markup_pct = round((suggested - base) / b.supplier_cost_ngn, 4)
+   121→                applied.append({"product_id": p.id, "old_price_ngn": b.ecos_price_ngn,
+   122→                                "new_price_ngn": suggested})
+   123→    return {"applied_changes": applied}
+   124→
+   125→
+   126→# --------------------------------------------------------------------------
+   127→# 2. Demand forecaster — "Stock Prophet" (advisory, §33)
+   128→# --------------------------------------------------------------------------
+   129→
+   130→def _gather_demand(db: Session, params: dict) -> dict[str, Any]:
+   131→    sales = _sales_snapshot(db)
+   132→    products = db.query(cm.Product).filter(cm.Product.status == "active").all()
+   133→    out = []
+   134→    for p in products:
+   135→        supplier = db.get(sm.Supplier, p.supplier_id)
+   136→        lead_weeks = max(1.0, (supplier.lead_time_days if supplier else 14) / 7.0)
+   137→        units = sales.get(p.id, {"units": 0, "revenue": 0.0})["units"]
+   138→        velocity = round(units / 4.0, 1)  # 4-week observed window
+   139→        cover = round(p.stock / velocity, 1) if velocity else None
+   140→        reorder = 0
+   141→        if velocity:
+   142→            need = lead_weeks * velocity * 1.5  # 1.5x safety stock
+   143→            reorder = max(0, int(round(need - p.stock)))
+   144→        out.append({
+   145→            "product_id": p.id, "product_title": p.title,
+   146→            "units_sold_4w": units, "weekly_velocity": velocity,
+   147→            "weeks_of_cover": cover, "supplier_lead_time_weeks": round(lead_weeks, 1),
+   148→            "stock": p.stock, "suggested_reorder_qty": reorder,
+   149→            "risk": ("stockout" if cover is not None and cover < lead_weeks
+   150→                     else "healthy" if cover is None or cover > 6 else "watch"),
+   151→        })
+   152→    return {"products": out}
+   153→
+   154→
+   155→def _heuristic_demand(gathered: dict[str, Any]) -> dict[str, Any]:
+   156→    prods = gathered["products"]
+   157→    risky = [p for p in prods if p["risk"] == "stockout"]
+   158→    return {
+   159→        "forecast_window": "4-week trailing velocity, 1.5x safety stock",
+   160→        "products": prods,
+   161→        "summary": (
+   162→            f"{len(risky)} product(s) risk stockout before supplier lead time "
+   163→            f"covers reorder; {sum(p['suggested_reorder_qty'] for p in prods)} units total reorder proposal."
+   164→        ),
+   165→    }
+   166→
+   167→
+   168→# --------------------------------------------------------------------------
+   169→# 3. Copywriter — "Launch Scribe" (§15 landing page engine support)
+   170→# --------------------------------------------------------------------------
+   171→
+   172→def _gather_copy(db: Session, params: dict) -> dict[str, Any]:
+   173→    p = db.get(cm.Product, int(params.get("product_id", 0)))
+   174→    if p is None:
+   175→        raise ValueError("product_id not found")
+   176→    b = price_product(p.supplier_cost, "CNY", p.weight_kg, p.markup_pct)
+   177→    return {"product": {
+   178→        "id": p.id, "title": p.title, "category": p.category, "slug": p.slug,
+   179→        "price_ngn": b.ecos_price_ngn, "description": p.description,
+   180→        "specs": p.specs, "stock": p.stock,
+   181→    }}
+   182→
+   183→
+   184→def _heuristic_copy(gathered: dict[str, Any]) -> dict[str, Any]:
+   185→    p = gathered["product"]
+   186→    return {
+   187→        "headline": f"{p['title']} — delivered to your door",
+   188→        "subheadline": (
+   189→            f"Quality-tested {p['category'].replace('-', ' ')} from our China network. "
+   190→            f"₦{p['price_ngn']:,.0f} — pay cash on delivery."
+   191→        ),
+   192→        "cta_label": "Order now", "cta_href": f"/products/{p['slug']}",
+   193→        "bullets": [
+   194→            "Pay on delivery — zero risk",
+   195→            "7-14 day tracked China→Nigeria delivery",
+   196→            "7-day returns, no questions asked",
+   197→        ],
+   198→        "rationale": "Highlights COD trust signals + delivery window; proven converter in this corridor.",
+   199→    }
+   200→
+   201→
+   202→def _apply_copy(db: Session, operator, output: dict, actor: dict) -> dict[str, Any]:
+   203→    product = db.get(cm.Product, output.get("_product_id", 0))
+   204→    if product is None:
+   205→        raise ValueError("proposal product no longer exists")
+   206→    blocks = [
+   207→        {"id": "b1", "type": "hero", "headline": output.get("headline", product.title),
+   208→         "subheadline": output.get("subheadline", ""),
+   209→         "cta_label": output.get("cta_label", "Order now"),
+   210→         "cta_href": f"/products/{product.slug}",
+   211→         "image": product.images[0] if product.images else f"https://picsum.photos/seed/{product.slug}/1600/900"},
+   212→        {"id": "b2", "type": "trust_badges",
+   213→         "items": "💵 | Pay on delivery\n🚚 | Tracked door-to-door\n✅ | 7-day returns"},
+   214→        {"id": "b3", "type": "product_showcase", "title": "More from the store", "mode": "latest", "limit": "3"},
+   215→    ]
+   216→    page = lpm.LandingPage(
+   217→        org_id=operator.org_id,
+   218→        slug=_unique_page_slug(db, f"{product.slug or product.id}-ai-copy"),
+   219→        title=f"{product.title} — AI campaign page",
+   220→        status="draft", blocks=blocks, theme={"primary": "#0ea5e9"},
+   221→        seo={"title": output.get("headline", product.title),
+   222→             "description": output.get("subheadline", "")[:160]},
+   223→        created_by=actor.get("user_id"),
+   224→    )
+   225→    db.add(page)
+   226→    db.flush()
+   227→    return {"landing_page_id": page.id, "slug": page.slug, "status": "draft (publish from Landing Pages)"}
+   228→
+   229→
+   230→# --------------------------------------------------------------------------
+   231→# 4. Lead responder — "Lead Whisperer" (§17 CRM support)
+   232→# --------------------------------------------------------------------------
+   233→
+   234→def _gather_lead(db: Session, params: dict) -> dict[str, Any]:
+   235→    lead = db.get(crm_m.Lead, int(params.get("lead_id", 0)))
+   236→    if lead is None:
+   237→        raise ValueError("lead_id not found")
+   238→    product = db.get(cm.Product, lead.product_id) if lead.product_id else None
+   239→    return {"lead": {
+   240→        "id": lead.id, "contact_name": lead.contact_name, "status": lead.status,
+   241→        "source": lead.source, "campaign": lead.campaign,
+   242→        "product": product.title if product else None,
+   243→        "notes": lead.notes,
+   244→    }}
+   245→
+   246→
+   247→def _heuristic_lead(gathered: dict[str, Any]) -> dict[str, Any]:
+   248→    lead = gathered["lead"]
+   249→    first = lead["contact_name"].split()[0] if lead["contact_name"] else "there"
+   250→    product = lead.get("product") or "the item you asked about"
+   251→    return {
+   252→        "draft_reply": (
+   253→            f"Hi {first}! Thanks for your interest in the {product}. "
+   254→            "It is in stock and ships from our China hub with door-to-door tracking — "
+   255→            "you only pay when it arrives. Would today or tomorrow work for a quick confirmation call?"
+   256→        ),
+   257→        "next_action": "Call to confirm order, then convert the lead in CRM",
+   258→        "tone": "warm, concise, COD trust-forward",
+   259→    }
+   260→
+   261→
+   262→def _apply_lead(db: Session, operator, output: dict, actor: dict) -> dict[str, Any]:
+   263→    lead = db.get(crm_m.Lead, output.get("_lead_id", 0))
+   264→    if lead is None:
+   265→        raise ValueError("proposal lead no longer exists")
+   266→    reply = output.get("draft_reply", "")
+   267→    lead.notes = ((lead.notes + "\n" if lead.notes else "") + f"[AI draft] {reply}").strip()
+   268→    changed = ["notes"]
+   269→    if lead.status == "new":
+   270→        lead.status = "contacted"
+   271→        changed.append("status")
+   272→    events.publish(db, "lead.updated", {"lead_id": lead.id, "changes": changed})
+   273→    return {"lead_id": lead.id, "updated": changed, "draft_saved": True}
+   274→
+   275→
+   276→# --------------------------------------------------------------------------
+   277→# 5. Product research — "Market Scout" (§32, advisory)
+   278→# --------------------------------------------------------------------------
+   279→
+   280→def _gather_research(db: Session, params: dict) -> dict[str, Any]:
+   281→    sales = _sales_snapshot(db)
+   282→    products = db.query(cm.Product).filter(cm.Product.status == "active").all()
+   283→    rows = []
+   284→    categories: dict[str, dict] = {}
+   285→    for p in products:
+   286→        s = sales.get(p.id, {"units": 0, "revenue": 0.0})
+   287→        b = price_product(p.supplier_cost, p.currency, p.weight_kg, p.markup_pct)
+   288→        velocity = round(s["units"] / 4.0, 2)
+   289→        supplier = db.get(sm.Supplier, p.supplier_id)
+   290→        rows.append({
+   291→            "product_id": p.id, "title": p.title, "category": p.category,
+   292→            "units_sold_4w": s["units"], "revenue_ngn": s["revenue"],
+   293→            "weekly_velocity": velocity, "stock": p.stock,
+   294→            "price_ngn": b.ecos_price_ngn,
+   295→            "margin_per_unit_ngn": round(b.operator_margin_ngn, 2),
+   296→            "supplier_rating": supplier.rating if supplier else None,
+   297→        })
+   298→        cat = categories.setdefault(p.category, {"products": 0, "units": 0, "revenue_ngn": 0.0})
+   299→        cat["products"] += 1
+   300→        cat["units"] += s["units"]
+   301→        cat["revenue_ngn"] = round(cat["revenue_ngn"] + s["revenue"], 2)
+   302→    rows.sort(key=lambda r: (-r["weekly_velocity"], -r["margin_per_unit_ngn"]))
+   303→    return {"products": rows, "category_summary": categories}
+   304→
+   305→
+   306→def _heuristic_research(gathered: dict[str, Any]) -> dict[str, Any]:
+   307→    prods = gathered["products"]
+   308→    winners = [
+   309→        {"product_id": p["product_id"], "title": p["title"], "signal": "proven_demand_thin_stock",
+   310→         "action": "scale ad spend + reorder now",
+   311→         "rationale": f"{p['units_sold_4w']} units in 4w with only {p['stock']} left — demand outruns supply."}
+   312→        for p in prods if p["weekly_velocity"] >= 2 and p["stock"] < 25
+   313→    ]
+   314→    sleepers = [
+   315→        {"product_id": p["product_id"], "title": p["title"], "signal": "healthy_margin_no_traction",
+   316→         "action": "test a dedicated landing page + 5-7 day promo",
+   317→         "rationale": f"Margin ₦{p['margin_per_unit_ngn']:,.0f}/unit but {p['units_sold_4w']} sales — the offer needs traffic, not price."}
+   318→        for p in prods if p["weekly_velocity"] < 2 and p["margin_per_unit_ngn"] >= 2000 and p["stock"] > 30
+   319→    ]
+   320→    cats = gathered["category_summary"]
+   321→    deep = sorted(cats.items(), key=lambda kv: -kv[1]["revenue_ngn"])[:2]
+   322→    gaps = [
+   323→        {"category": name, "signal": "revenue_concentration",
+   324→         "action": f"Source 2-3 more {name.replace('-', ' ')} SKUs from the supplier network",
+   325→         "rationale": f"{data['products']} SKU(s) already drive ₦{data['revenue_ngn']:,.0f} — widen the assortment while it's hot."}
+   326→        for name, data in deep
+   327→    ]
+   328→    return {
+   329→        "opportunities": {"scale_now": winners, "revive": sleepers, "category_gaps": gaps},
+   330→        "summary": (
+   331→            f"{len(winners)} scale-now, {len(sleepers)} revive, {len(gaps)} category gap(s) "
+   332→            f"across {len(prods)} active SKUs."
+   333→        ),
+   334→        "rationale": "Ranked by 4-week velocity, unit margin and stock cover.",
+   335→    }
+   336→
+   337→
+   338→# --------------------------------------------------------------------------
+   339→# 6. Product import — "Catalog Forger" (§33, apply -> draft product)
+   340→# --------------------------------------------------------------------------
+   341→
+   342→def _unique_product_slug(db: Session, base: str) -> str:
+   343→    base = re.sub(r"[^a-z0-9-]+", "-", base.lower()).strip("-") or "imported-product"
+   344→    slug, n = base, 2
+   345→    while db.query(cm.Product).filter(cm.Product.slug == slug).count():
+   346→        slug = f"{base}-{n}"
+   347→        n += 1
+   348→    return slug
+   349→
+   350→
+   351→def _to_num_or(v: Any, default: float) -> float:
+   352→    try:
+   353→        return float(re.sub(r"[^0-9.]", "", str(v)) or default)
+   354→    except ValueError:
+   355→        return default
+   356→
+   357→
+   358→def _parse_listing(text: str) -> dict[str, Any]:
+   359→    """Parse a raw supplier listing: 'Title | 95 CNY | 0.25kg | electronics | k=v; k=v'."""
+   360→    lines = [ln.strip() for ln in text.strip().splitlines() if ln.strip()]
+   361→    parts = re.split(r"\s*\|\s*", lines[0]) if lines else []
+   362→    title = (parts[0] if parts else "Untitled import").strip()[:255]
+   363→    cost = _to_num_or(parts[1] if len(parts) > 1 else 0, 0.0)
+   364→    currency = "CNY"
+   365→    for token in parts[1:]:
+   366→        up = token.upper()
+   367→        if "USD" in up or "$" in up:
+   368→            currency = "USD"
+   369→        elif "CNY" in up or "¥" in up or "RMB" in up:
+   370→            currency = "CNY"
+   371→    weight = next((_to_num_or(t, 0.5) for t in parts if "kg" in t.lower()), 0.5)
+   372→    category = "general"
+   373→    if len(parts) > 3:
+   374→        category = parts[3].strip().lower().replace(" ", "-") or "general"
+   375→    specs: dict[str, str] = {}
+   376→    specs_raw = next((t for t in parts if "=" in t and ";" in t), "")
+   377→    if specs_raw:
+   378→        for pair in specs_raw.split(";"):
+   379→            if "=" in pair:
+   380→                k, _, v = pair.partition("=")
+   381→                specs[k.strip()] = v.strip()
+   382→    return {"title": title, "cost": cost, "currency": currency,
+   383→            "weight_kg": weight, "category": category, "specs": specs}
+   384→
+   385→
+   386→def _gather_import(db: Session, params: dict) -> dict[str, Any]:
+   387→    listing = str(params.get("listing") or "").strip()
+   388→    if not listing:
+   389→        raise ValueError("params.listing is required — paste the raw supplier listing")
+   390→    parsed = _parse_listing(listing)
+   391→    supplier_id = int(params.get("supplier_id") or 0) or None
+   392→    supplier = db.get(sm.Supplier, supplier_id) if supplier_id else (
+   393→        db.query(sm.Supplier).filter(sm.Supplier.status == "verified")
+   394→        .order_by(sm.Supplier.rating.desc()).first()
+   395→    )
+   396→    breakdown = price_product(parsed["cost"], parsed["currency"], parsed["weight_kg"], None)
+   397→    slug = re.sub(r"[^a-z0-9-]+", "-", parsed["title"].lower()).strip("-")
+   398→    collision = db.query(cm.Product).filter(cm.Product.slug == slug).count() > 0
+   399→    return {
+   400→        "draft": {
+   401→            "title": parsed["title"], "slug": slug, "slug_collision": collision,
+   402→            "category": parsed["category"], "cost": parsed["cost"],
+   403→            "currency": parsed["currency"], "weight_kg": parsed["weight_kg"],
+   404→            "specs": parsed["specs"],
+   405→        },
+   406→        "supplier": {"id": supplier.id, "name": supplier.name, "rating": supplier.rating,
+   407→                     "lead_time_days": supplier.lead_time_days} if supplier else None,
+   408→        "proposed_price": {
+   409→            "ecos_price_ngn": breakdown.ecos_price_ngn,
+   410→            "waterfall": breakdown.components,
+   411→        },
+   412→    }
+   413→
+   414→
+   415→def _heuristic_import(gathered: dict[str, Any]) -> dict[str, Any]:
+   416→    d, price = gathered["draft"], gathered["proposed_price"]
+   417→    supplier = gathered.get("supplier")
+   418→    desc = (
+   419→        f"{d['title']} — imported via the China-Nigeria corridor"
+   420→        + (f" and quality-checked with {supplier['name']}." if supplier else ".")
+   421→        + " Delivered to your door with tracking; pay cash on delivery."
+   422→    )
+   423→    return {
+   424→        "draft_listing": {
+   425→            "title": d["title"], "slug": d["slug"], "category": d["category"],
+   426→            "description": desc, "specs": d["specs"],
+   427→            "supplier_cost": d["cost"], "currency": d["currency"],
+   428→            "weight_kg": d["weight_kg"],
+   429→        },
+   430→        "proposed_price_ngn": price["ecos_price_ngn"],
+   431→        "supplier_id": supplier["id"] if supplier else None,
+   432→        "checks": [
+   433→            "Priced through the full §12 waterfall (cost -> FX -> logistics -> fees -> margins)",
+   434→            "Created as DRAFT — a human reviews and activates it in Catalog (§9 supplier isolation)",
+   435→        ],
+   436→        "summary": f"Ready to file '{d['title']}' at ₦{price['ecos_price_ngn']:,.0f} (draft, pending review).",
+   437→    }
+   438→
+   439→
+   440→def _apply_import(db: Session, operator, output: dict, actor: dict) -> dict[str, Any]:
+   441→    draft = output.get("draft_listing") or {}
+   442→    title = draft.get("title") or "Untitled import"
+   443→    slug = _unique_product_slug(db, draft.get("slug") or title)
+   444→    product = cm.Product(
+   445→        supplier_id=int(output.get("supplier_id") or 0) or None,
+   446→        slug=slug, title=title,
+   447→        description=(draft.get("description") or "")[:4096],
+   448→        category=draft.get("category") or "general",
+   449→        currency=draft.get("currency") or "CNY",
+   450→        supplier_cost=float(draft.get("supplier_cost") or 0.0),
+   451→        weight_kg=float(draft.get("weight_kg") or 0.5),
+   452→        status="draft", stock=0,
+   453→        specs=draft.get("specs") or {},
+   454→        images=[f"https://picsum.photos/seed/{slug}/800/600"],
+   455→    )
+   456→    db.add(product)
+   457→    db.flush()
+   458→    return {"product_id": product.id, "slug": product.slug,
+   459→            "status": "draft (review + activate in Catalog)"}
+   460→
+   461→
+   462→# --------------------------------------------------------------------------
+   463→# 7. Growth operator — "Growth Pilot" (§36, advisory)
+   464→# --------------------------------------------------------------------------
+   465→
+   466→def _gather_growth(db: Session, params: dict) -> dict[str, Any]:
+   467→    from app.marketing import service as attribution
+   468→
+   469→    return {"report": attribution.campaign_report(db)}
+   470→
+   471→
+   472→def _heuristic_growth(gathered: dict[str, Any]) -> dict[str, Any]:
+   473→    report = gathered["report"]
+   474→    rows = [c for c in report["campaigns"] if c["status"] == "active"]
+   475→    with_orders = [c for c in rows if c["orders"] and c["cpa_ngn"]]
+   476→    best = min(with_orders, key=lambda c: c["cpa_ngn"]) if with_orders else None
+   477→    worst = max(with_orders, key=lambda c: c["cpa_ngn"]) if with_orders else None
+   478→    dead = [c for c in rows if not c["leads"]]
+   479→
+   480→    moves: list[dict[str, Any]] = []
+   481→    if best:
+   482→        moves.append({"campaign": best["name"], "move": "scale",
+   483→                      "detail": f"Best CPA (₦{best['cpa_ngn']:,.0f}) with {best['orders']} attributed orders — raise budget 20-30% and keep the winning creative."})
+   484→    if worst and best and worst["id"] != best["id"]:
+   485→        moves.append({"campaign": worst["name"], "move": "fix_or_pause",
+   486→                      "detail": f"CPA ₦{worst['cpa_ngn']:,.0f} vs best ₦{best['cpa_ngn']:,.0f} — refresh the audience/creative before adding spend."})
+   487→    for c in dead:
+   488→        moves.append({"campaign": c["name"], "move": "investigate",
+   489→                      "detail": "Zero attributed leads — check UTM wiring on the landing page and the agent intake path."})
+   490→    top_src = (report["by_source"] or [{}])[0]
+   491→    return {
+   492→        "budget_moves": moves,
+   493→        "channel_insight": (
+   494→            f"{top_src.get('source', 'n/a')} leads convert best "
+   495→            f"({top_src.get('converted_leads', 0)}/{top_src.get('leads', 0)}) — replicate its messaging on paid channels."
+   496→            if top_src else "No source data yet."
+   497→        ),
+   498→        "totals": report["totals"],
+   499→        "summary": f"{len(moves)} budget move(s) proposed across {len(rows)} active campaign(s).",
+   500→        "rationale": "CPA from campaign spend vs attributed orders; zero-lead campaigns investigated first.",
+   501→    }
+   502→
+   503→
+   504→# --------------------------------------------------------------------------
+   505→# 8. Logistics operator — "Route Guard" (§37, apply -> escalations)
+   506→# --------------------------------------------------------------------------
+   507→
+   508→def _now_utc():
+   509→    """Naive UTC (SQLite stores naive datetimes — keep comparisons consistent)."""
+   510→    from datetime import datetime as _dt, timezone as _tz
+   511→    return _dt.now(_tz.utc).replace(tzinfo=None)
+   512→
+   513→
+   514→def _gather_logistics_ops(db: Session, params: dict) -> dict[str, Any]:
+   515→    from app.logistics import models as lm_
+   516→
+   517→    stall_hours = max(6, int(params.get("stall_hours") or 48))
+   518→    now = _now_utc()
+   519→    shipments = db.query(lm_.Shipment).order_by(lm_.Shipment.id.desc()).limit(200).all()
+   520→    active_states = ("processing", "in_transit", "out_for_delivery")
+   521→    rows, stalled = [], []
+   522→    for s in shipments:
+   523→        last = (
+   524→            db.query(lm_.TrackingEvent)
+   525→            .filter(lm_.TrackingEvent.shipment_id == s.id)
+   526→            .order_by(lm_.TrackingEvent.occurred_at.desc(), lm_.TrackingEvent.id.desc())
+   527→            .first()
+   528→        )
+   529→        age_h = None
+   530→        if last and last.occurred_at:
+   531→            age_h = round((now - last.occurred_at).total_seconds() / 3600, 1)
+   532→        row = {"shipment_id": s.id, "order_id": s.order_id, "tracking_code": s.tracking_code,
+   533→               "carrier": s.carrier, "status": s.status,
+   534→               "last_checkpoint": last.code if last else None,
+   535→               "hours_since_checkpoint": age_h}
+   536→        rows.append(row)
+   537→        if s.status in active_states and (age_h is None or age_h >= stall_hours):
+   538→            stalled.append(row)
+   539→    delivered_rows = [r for r in rows if r["status"] == "delivered"]
+   540→    return {
+   541→        "threshold_hours": stall_hours,
+   542→        "totals": {"tracked": len(rows), "delivered": len(delivered_rows),
+   543→                   "active": len(rows) - len(delivered_rows), "stalled": len(stalled)},
+   544→        "stalled_shipments": stalled,
+   545→    }
+   546→
+   547→
+   548→def _heuristic_logistics_ops(gathered: dict[str, Any]) -> dict[str, Any]:
+   549→    totals = gathered["totals"]
+   550→    escalations = [
+   551→        {"shipment_id": s["shipment_id"], "tracking_code": s["tracking_code"],
+   552→         "action": "probe_carrier_and_notify_customer",
+   553→         "detail": (
+   554→             f"No checkpoint advance in {s['hours_since_checkpoint'] if s['hours_since_checkpoint'] is not None else 'unknown'}h "
+   555→             f"(threshold {gathered['threshold_hours']}h). Last checkpoint: {s['last_checkpoint'] or 'none'}. "
+   556→             "Ping the carrier lane, then message the customer with an honest ETA."
+   557→         )}
+   558→        for s in gathered["stalled_shipments"]
+   559→    ]
+   560→    return {
+   561→        "escalations": escalations,
+   562→        "totals": totals,
+   563→        "summary": (
+   564→            f"{totals['stalled']} of {totals['active']} active shipment(s) breached the "
+   565→            f"{gathered['threshold_hours']}h checkpoint SLA; delivered {totals['delivered']}/{totals['tracked']}."
+   566→        ),
+   567→        "rationale": "Checkpoint freshness is the corridor's honest health signal — silence means trouble.",
+   568→    }
+   569→
+   570→
+   571→def _apply_logistics_ops(db: Session, operator, output: dict, actor: dict) -> dict[str, Any]:
+   572→    from app.notifications import service as notif_service
+   573→
+   574→    raised = []
+   575→    for esc in output.get("escalations", []):
+   576→        rows = notif_service.notify(
+   577→            db,
+   578→            org_id=operator.org_id, category="shipments", level="warning",
+   579→            title=f"Shipment {esc.get('tracking_code', esc.get('shipment_id'))} stalled",
+   580→            body=str(esc.get("detail", ""))[:1024],
+   581→            entity_type="shipment", entity_id=int(esc.get("shipment_id") or 0) or None,
+   582→            meta={"operator": operator.code},
+   583→        )
+   584→        raised.append({"shipment_id": esc.get("shipment_id"), "notifications": len(rows)})
+   585→    return {"escalations_raised": raised}
+   586→
+   587→
+   588→# --------------------------------------------------------------------------
+   589→# 9. Business analyst — "P&L Analyst" (§38, advisory)
+   590→# --------------------------------------------------------------------------
+   591→
+   592→def _gather_analyst(db: Session, params: dict) -> dict[str, Any]:
+   593→    from app.finance import models as fm
+   594→    from app.returns import models as rm
+   595→    from app.settlements import service as settlement_service
+   596→
+   597→    by_type = dict(
+   598→        db.query(fm.LedgerEntry.entry_type, sa_func.sum(fm.LedgerEntry.amount))
+   599→        .group_by(fm.LedgerEntry.entry_type).all()
+   600→    )
+   601→    by_type = {k: round(float(v or 0.0), 2) for k, v in by_type.items()}
+   602→    total_orders = db.query(sa_func.count(om.Order.id)).scalar() or 0
+   603→    delivered = db.query(sa_func.count(om.Order.id)).filter(om.Order.status == "delivered").scalar() or 0
+   604→    problem = (
+   605→        db.query(sa_func.count(om.Order.id))
+   606→        .filter(om.Order.status.in_(["cancelled", "failed", "returned", "refunded"]))
+   607→        .scalar() or 0
+   608→    )
+   609→    rmas = db.query(sa_func.count(rm.ReturnOrder.id)).scalar() or 0
+   610→    units_sold = db.query(sa_func.coalesce(sa_func.sum(om.OrderItem.qty), 0)).scalar() or 0
+   611→    try:
+   612→        unsettled = settlement_service.unsettled_summary(db)
+   613→    except Exception:  # noqa: BLE001 — analytics must not depend on settlement state
+   614→        unsettled = {"total_amount": 0.0, "entry_count": 0}
+   615→    return {
+   616→        "ledger_totals_by_type": by_type,
+   617→        "orders": {"total": total_orders, "delivered": delivered, "problem": problem},
+   618→        "returns": {"rma_count": rmas, "units_sold": int(units_sold)},
+   619→        "unsettled_obligations": {"amount": unsettled.get("total_amount", 0.0),
+   620→                                  "entries": unsettled.get("entry_count", 0)},
+   621→    }
+   622→
+   623→
+   624→def _heuristic_analyst(gathered: dict[str, Any]) -> dict[str, Any]:
+   625→    led = gathered["ledger_totals_by_type"]
+   626→    revenue = led.get("customer_payment", 0.0)
+   627→    refunds = led.get("refund", 0.0)
+   628→    supplier = abs(led.get("supplier_payable", 0.0))
+   629→    logistics = abs(led.get("logistics_cost", 0.0))
+   630→    paycost = abs(led.get("payment_cost", 0.0))
+   631→    luxeen = abs(led.get("luxeen_economics", 0.0))
+   632→    operator = led.get("operator_economics", 0.0)
+   633→    net = revenue + refunds  # refunds arrive pre-signed (negative)
+   634→    contribution = net - supplier - logistics - paycost - luxeen
+   635→
+   636→    orders = gathered["orders"]
+   637→    delivery_rate = round(orders["delivered"] / orders["total"], 3) if orders["total"] else 0.0
+   638→    rma = gathered["returns"]
+   639→    return_rate = round(rma["rma_count"] / orders["total"], 3) if orders["total"] else 0.0
+   640→    unsettled = gathered["unsettled_obligations"]
+   641→
+   642→    risks: list[str] = []
+   643→    if delivery_rate < 0.5 and orders["total"] >= 5:
+   644→        risks.append(f"Delivery rate is {delivery_rate:.0%} — cash is stuck in the pipeline; chase the in-flight orders.")
+   645→    if return_rate > 0.15:
+   646→        risks.append(f"Return rate {return_rate:.0%} is above the 15% comfort line — inspect the top-returned SKUs.")
+   647→    if unsettled["amount"] > 0:
+   648→        risks.append(f"₦{unsettled['amount']:,.0f} across {unsettled['entries']} ledger entries is still unsettled — counterparties are waiting.")
+   649→    if not risks:
+   650→        risks.append("No red flags: pipeline, returns and settlements all look healthy this period.")
+   651→
+   652→    highlights = [
+   653→        f"Gross collections ₦{revenue:,.0f}; net after refunds ₦{net:,.0f}.",
+   654→        f"Contribution after supplier/logistics/fees/Luxeen: ₦{contribution:,.0f} "
+   655→        f"({(contribution / net * 100 if net else 0):.1f}% of net).",
+   656→        f"Operator economics so far: ₦{operator:,.0f}.",
+   657→    ]
+   658→    return {
+   659→        "highlights": highlights,
+   660→        "risks": risks,
+   661→        "recommendations": [
+   662→            "Reconcile the settlement queue weekly — stale payables erode supplier trust and lane priority.",
+   663→            "Watch the stockout-risk SKUs; a stockout on a proven mover costs more than a PO.",
+   664→            "Keep COD confirmations fast: every hour between order and confirmation raises the cancel rate.",
+   665→        ],
+   666→        "metrics": {
+   667→            "net_revenue_ngn": round(net, 2), "contribution_ngn": round(contribution, 2),
+   668→            "delivery_rate": delivery_rate, "return_rate": return_rate,
+   669→            "unsettled_ngn": unsettled["amount"],
+   670→        },
+   671→        "summary": f"Net ₦{net:,.0f}, contribution ₦{contribution:,.0f}, {len(risks)} risk note(s).",
+   672→    }
+   673→
+   674→
+   675→# --------------------------------------------------------------------------
+   676→# Registry
+   677→# --------------------------------------------------------------------------
+   678→
+   679→BLUEPRINTS: dict[str, dict[str, Any]] = {
+   680→    "pricing_analyst": {
+   681→        "code": "pricing_analyst",
+   682→        "name": "Margin Sentinel",
+   683→        "role_description": "Scans catalog margins vs. sales velocity and proposes price moves.",
+   684→        "advisory": False,
+   685→        "input_fields": [],
+   686→        "gather": _gather_pricing,
+   687→        "heuristic": _heuristic_pricing,
+   688→        "apply": _apply_pricing,
+   689→        "task_brief": (
+   690→            "You are Margin Sentinel, a pricing analyst for a China→Nigeria e-commerce "
+   691→            "corridor. Using the catalog snapshot, propose 0-5 price adjustments. "
+   692→            "Respond ONLY with JSON: {\"analysis\": str, \"recommendations\": "
+   693→            "[{\"product_id\": int, \"suggested_price_ngn\": number, \"rationale\": str}], \"summary\": str}"
+   694→        ),
+   695→    },
+   696→    "demand_forecaster": {
+   697→        "code": "demand_forecaster",
+   698→        "name": "Stock Prophet",
+   699→        "role_description": "Forecasts restock needs from sales velocity vs. supplier lead times. Advisory only.",
+   700→        "advisory": True,
+   701→        "input_fields": [],
+   702→        "gather": _gather_demand,
+   703→        "heuristic": _heuristic_demand,
+   704→        "apply": None,
+   705→        "task_brief": (
+   706→            "You are Stock Prophet, a demand planner. Using the velocity snapshot, flag "
+   707→            "stockout risk and propose reorder quantities. Respond ONLY with JSON: "
+   708→            "{\"summary\": str, \"products\": [{\"product_id\": int, \"risk\": str, "
+   709→            "\"suggested_reorder_qty\": int, \"rationale\": str}]}"
+   710→        ),
+   711→    },
+   712→    "copywriter": {
+   713→        "code": "copywriter",
+   714→        "name": "Launch Scribe",
+   715→        "role_description": "Writes campaign landing-page copy for a product; approval publishes a draft page.",
+   716→        "advisory": False,
+   717→        "input_fields": [{"key": "product_id", "label": "Product", "type": "number", "required": True}],
+   718→        "gather": _gather_copy,
+   719→        "heuristic": _heuristic_copy,
+   720→        "apply": _apply_copy,
+   721→        "task_brief": (
+   722→            "You are Launch Scribe, a direct-response copywriter for COD e-commerce in Nigeria. "
+   723→            "Write landing hero copy for the given product. Respond ONLY with JSON: "
+   724→            "{\"headline\": str, \"subheadline\": str, \"cta_label\": str, \"bullets\": [str], "
+   725→            "\"rationale\": str}"
+   726→        ),
+   727→    },
+   728→    "lead_responder": {
+   729→        "code": "lead_responder",
+   730→        "name": "Lead Whisperer",
+   731→        "role_description": "Drafts a personal follow-up reply for a CRM lead; approval saves it to the lead.",
+   732→        "advisory": False,
+   733→        "input_fields": [{"key": "lead_id", "label": "Lead", "type": "number", "required": True}],
+   734→        "gather": _gather_lead,
+   735→        "heuristic": _heuristic_lead,
+   736→        "apply": _apply_lead,
+   737→        "task_brief": (
+   738→            "You are Lead Whisperer, a sales assistant for COD e-commerce. Draft a short "
+   739→            "follow-up reply for the given lead. Respond ONLY with JSON: "
+   740→            "{\"draft_reply\": str, \"next_action\": str, \"tone\": str}"
+   741→        ),
+   742→    },
+   743→    "product_research": {
+   744→        "code": "product_research",
+   745→        "name": "Market Scout",
+   746→        "role_description": "Researches the catalog for scale-now winners, dormant sleepers and category gaps (§32). Advisory only.",
+   747→        "advisory": True,
+   748→        "input_fields": [],
+   749→        "gather": _gather_research,
+   750→        "heuristic": _heuristic_research,
+   751→        "apply": None,
+   752→        "task_brief": (
+   753→            "You are Market Scout, a product research analyst for a China->Nigeria corridor. "
+   754→            "Using the velocity/margin snapshot, surface scale-now winners, sleepers worth "
+   755→            "reviving, and category gaps worth sourcing. Respond ONLY with JSON: "
+   756→            "{\"opportunities\": {\"scale_now\": [...], \"revive\": [...], \"category_gaps\": [...]}, "
+   757→            "\"summary\": str, \"rationale\": str}"
+   758→        ),
+   759→    },
+   760→    "product_import": {
+   761→        "code": "product_import",
+   762→        "name": "Catalog Forger",
+   763→        "role_description": "Parses a raw supplier listing into a structured draft product priced by the waterfall; approval files it in Catalog (§33).",
+   764→        "advisory": False,
+   765→        "input_fields": [
+   766→            {"key": "listing", "label": "Raw supplier listing", "type": "text", "required": True,
+   767→             "placeholder": "Mini Projector HD | 210 CNY | 1.4kg | electronics | warranty=6 months; resolution=1080p"},
+   768→            {"key": "supplier_id", "label": "Supplier (optional — defaults to best-rated)", "type": "number", "required": False},
+   769→        ],
+   770→        "gather": _gather_import,
+   771→        "heuristic": _heuristic_import,
+   772→        "apply": _apply_import,
+   773→        "task_brief": (
+   774→            "You are Catalog Forger, a catalog operations specialist. Turn the parsed supplier "
+   775→            "listing into a clean draft listing with a customer-facing description. Respond ONLY "
+   776→            "with JSON: {\"draft_listing\": {\"title\": str, \"slug\": str, \"category\": str, "
+   777→            "\"description\": str, \"specs\": {...}, \"supplier_cost\": number, \"currency\": str, "
+   778→            "\"weight_kg\": number}, \"proposed_price_ngn\": number, \"supplier_id\": int, "
+   779→            "\"checks\": [str], \"summary\": str}"
+   780→        ),
+   781→    },
+   782→    "growth_operator": {
+   783→        "code": "growth_operator",
+   784→        "name": "Growth Pilot",
+   785→        "role_description": "Reads the attribution report and proposes concrete budget moves per campaign/channel (§36). Advisory only.",
+   786→        "advisory": True,
+   787→        "input_fields": [],
+   788→        "gather": _gather_growth,
+   789→        "heuristic": _heuristic_growth,
+   790→        "apply": None,
+   791→        "task_brief": (
+   792→            "You are Growth Pilot, a growth marketer for COD e-commerce. Using the attribution "
+   793→            "report, propose budget moves (scale / fix_or_pause / investigate) and one channel "
+   794→            "insight. Respond ONLY with JSON: {\"budget_moves\": [{\"campaign\": str, \"move\": str, "
+   795→            "\"detail\": str}], \"channel_insight\": str, \"totals\": {...}, \"summary\": str, "
+   796→            "\"rationale\": str}"
+   797→        ),
+   798→    },
+   799→    "logistics_operator": {
+   800→        "code": "logistics_operator",
+   801→        "name": "Route Guard",
+   802→        "role_description": "Watches shipment checkpoint freshness and escalates stalled lanes; approval raises ops notifications (§37).",
+   803→        "advisory": False,
+   804→        "input_fields": [{"key": "stall_hours", "label": "Stall threshold (hours)", "type": "number", "required": False}],
+   805→        "gather": _gather_logistics_ops,
+   806→        "heuristic": _heuristic_logistics_ops,
+   807→        "apply": _apply_logistics_ops,
+   808→        "task_brief": (
+   809→            "You are Route Guard, a logistics escalation manager. Using shipment checkpoint data, "
+   810→            "flag shipments that breached the stall threshold and propose next actions. Respond "
+   811→            "ONLY with JSON: {\"escalations\": [{\"shipment_id\": int, \"tracking_code\": str, "
+   812→            "\"action\": str, \"detail\": str}], \"totals\": {...}, \"summary\": str, \"rationale\": str}"
+   813→        ),
+   814→    },
+   815→    "business_analyst": {
+   816→        "code": "business_analyst",
+   817→        "name": "P&L Analyst",
+   818→        "role_description": "Compiles a ledger-grounded P&L digest with highlights, risks and recommendations (§38). Advisory only.",
+   819→        "advisory": True,
+   820→        "input_fields": [],
+   821→        "gather": _gather_analyst,
+   822→        "heuristic": _heuristic_analyst,
+   823→        "apply": None,
+   824→        "task_brief": (
+   825→            "You are the Business Analyst for a cross-border e-commerce corridor. Using the ledger "
+   826→            "totals and order stats, produce a digest: highlights, risks, recommendations, metrics. "
+   827→            "Respond ONLY with JSON: {\"highlights\": [str], \"risks\": [str], \"recommendations\": [str], "
+   828→            "\"metrics\": {...}, \"summary\": str}"
+   829→        ),
+   830→    },
+   831→}
+   832→
