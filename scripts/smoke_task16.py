@@ -14,6 +14,7 @@ Covers:
 import json
 import sys
 import urllib.request
+import urllib.parse
 
 BASE = "http://localhost:8000/api"
 PASS, FAIL = 0, 0
@@ -265,6 +266,34 @@ _, notes = GET("/notifications", owner)
 notes = notes if isinstance(notes, list) else notes.get("items", [])
 check("operator told to collect COD themselves",
       any("fulfilled by supplier dropship" in (n.get("title") or "") for n in notes))
+
+print("== G. public /track — the customer sees the dropship corridor ==")
+cust_phone = urllib.parse.quote(cust.get("phone", ""))
+status, j = GET(f"/public/orders/{order_id}?phone={cust_phone}", None)
+check("public order status reachable", status == 200, f"got {status}")
+sh = j.get("shipment") or {}
+check("dropship timeline surfaced on /track", bool(sh) and sh.get("carrier") == "Ecos Network — supplier direct mail",
+      str(sh)[:200])
+codes_seen = [e.get("code") for e in sh.get("tracking_events", [])]
+check("corridor checkpoints visible to the customer",
+      "delivered" in codes_seen and "picked_up" in codes_seen, str(codes_seen))
+check("timeline status delivered", sh.get("status") == "delivered", sh.get("status"))
+
+# §9 hardening: a supplier typing their identity into free-text checkpoint
+# fields must NOT leak it to the customer's public tracking page
+SUPPLIER_NAME = "Shenzhen Huanxi Electronics"
+sup_track(sup_c["id"], "delivered",
+          f"Handed over by {SUPPLIER_NAME} courier, questions: supplier@shenzhen.example or +2348095550001",
+          f"{SUPPLIER_NAME} dispatch hub, Shenzhen, CN")
+status, j = GET(f"/public/orders/{order_id}?phone={cust_phone}", None)
+blob = json.dumps(j)
+check("supplier company name scrubbed from /track (§9)", SUPPLIER_NAME not in blob)
+check("supplier email scrubbed from /track (§9)", "supplier@shenzhen.example" not in blob)
+check("supplier phone scrubbed from /track (§9)", "+2348095550001" not in blob)
+check("city geography still honest on /track", "Shenzhen, CN" in blob)
+check("no supplier/economic fields on /track",
+      "supplier_id" not in blob and "cost" not in blob.lower())
+check("scrubbed line stays readable", "the origin facility" in blob)
 
 print(f"\n=== SMOKE TASK 16: {PASS} PASS / {FAIL} FAIL ===")
 sys.exit(1 if FAIL else 0)

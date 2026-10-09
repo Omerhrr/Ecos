@@ -507,6 +507,13 @@ def public_order_status(order_id: int, phone: str, db: Session = Depends(get_db)
                 for e in checkpoints
             ],
         }
+    else:
+        # DROPSHIP (§20/§23): a supplier courier carries the parcel direct to
+        # the customer — no Ecos shipment row exists, but the customer still
+        # deserves a live timeline. Surface the corridor checkpoints from the
+        # linked dropship sourcing orders. §9-safe by construction: tracking
+        # facts only — no supplier identity, no economics, no buyer internals.
+        shipment_out = _dropship_timeline(db, order)
 
     return {
         "order_id": order.id,
@@ -524,6 +531,96 @@ def public_order_status(order_id: int, phone: str, db: Session = Depends(get_db)
             for i in items
         ],
         "shipment": shipment_out,
+    }
+
+
+def _scrub_supplier_text(text: str, names: list[str]) -> str:
+    """Strip supplier-identifying free text off a public tracking line.
+
+    Geography stays (city/country is the corridor's public story — the
+    storefront advertises China→Nigeria shipping); what must never surface
+    is the supplier as a BUSINESS: company names, emails, phone numbers.
+    """
+    import re
+
+    out = text or ""
+    for name in names:
+        if name:
+            out = re.sub(re.escape(name), "the origin facility", out, flags=re.IGNORECASE)
+    out = re.sub(r"[\w.+-]+@[\w-]+\.[\w.]+", "[contact]", out)          # emails
+    # phone-like runs (>=10 digits — leaves dates like 2026-10-09 alone)
+    out = re.sub(r"(?=(?:\D*\d){10})\+?\d[\d\s\-()]{8,}\d", "[contact]", out)
+    return out
+
+
+def _dropship_timeline(db: Session, order) -> dict | None:
+    """Customer-safe tracking for a DROPSHIP-fulfilled order (§20, §23).
+
+    The supplier ships direct to the recipient, so checkpoints live on the
+    linked sourcing orders (`customer_order_id`), not on an Ecos shipment.
+    This shapes them into the same payload the public page already renders.
+
+    §9 isolation on a public surface: the payload carries the corridor
+    ladder and nothing else — no supplier identity, no costs, no FX, no
+    operator economics. `carrier` is intentionally generic.
+    """
+    from app.market import models as mm
+    from app.supply import models as sm
+
+    linked = (
+        db.query(mm.SourcingOrder)
+        .filter(
+            mm.SourcingOrder.customer_order_id == order.id,
+            mm.SourcingOrder.fulfillment_mode == "dropship",
+            mm.SourcingOrder.status != "cancelled",
+        )
+        .all()
+    )
+    if not linked:
+        return None
+
+    # supplier company names, so free-text checkpoints can be scrubbed
+    sup_names = [
+        row[0]
+        for row in db.query(sm.Supplier.name)
+        .filter(sm.Supplier.id.in_([so.supplier_id for so in linked]))
+        .all()
+        if row[0]
+    ]
+
+    ladder = mm.DROPSHIP_STATUSES
+    # least-advanced status wins — never tell the customer "delivered"
+    # while one of their parcels is still clearing customs
+    status = min((so.status for so in linked if so.status in ladder),
+                 key=lambda s: ladder.index(s), default=linked[0].status)
+    events = (
+        db.query(mm.SourcingEvent)
+        .filter(mm.SourcingEvent.sourcing_order_id.in_([so.id for so in linked]))
+        .order_by(mm.SourcingEvent.occurred_at.desc(), mm.SourcingEvent.id.desc())
+        .limit(30)
+        .all()
+    )
+    all_delivered = all(so.status == "delivered" for so in linked)
+    delivered_at = None
+    if all_delivered and events:
+        delivered_at = events[0].occurred_at.isoformat()
+    codes = [so.order_number for so in linked]
+    tracking_code = codes[0] if len(codes) == 1 else f"{codes[0]} +{len(codes) - 1} more"
+    return {
+        "tracking_code": tracking_code,
+        "carrier": "Ecos Network — supplier direct mail",
+        "status": status,
+        "created_at": linked[0].created_at.isoformat() if linked[0].created_at else None,
+        "delivered_at": delivered_at,
+        "tracking_events": [
+            {
+                "code": e.code,
+                "description": _scrub_supplier_text(e.description, sup_names),
+                "location": _scrub_supplier_text(e.location, sup_names),
+                "occurred_at": e.occurred_at.isoformat() if e.occurred_at else None,
+            }
+            for e in events
+        ],
     }
 
 

@@ -1,6 +1,6 @@
 # ECOS Build Status — Audit vs Plan (62 sections)
 
-Snapshot against `PLAN.md` after Task 14 (corridor depth: supplier portal §8/§9, Marketstore + sourcing §10/§11/§20, AGM §22/§24, money §26/§46).
+Snapshot against `PLAN.md` after Task 16 (dropship mode: supplier ships direct to customers, skipping AGM).
 Legend: ✅ core built & verified · 🟡 partial (core exists, gaps listed) · ❌ not started · ◻ vision/context (no code implied).
 
 | § | Section | Status | Evidence / remaining gap |
@@ -24,10 +24,10 @@ Legend: ✅ core built & verified · 🟡 partial (core exists, gaps listed) · 
 | 17 | CRM | ✅ | Pipeline incl. alternative paths, convert→order, storefront leads, campaign attribution |
 | 18 | Customer Intelligence | ❌ | Data accumulating (orders/RMAs/attributions); no intelligence features yet |
 | 19 | Order Engine | ✅ | Full state machine w/ branch states, price/cost/weight snapshots, per-line items |
-| 20 | Fulfillment Engine | ✅ | Order→warehouse pick waves→shipments; supplier step modeled as `supplier_processing`; **sourcing orders: supplier accepts and drives the §23 ladder end-to-end** |
+| 20 | Fulfillment Engine | ✅ | Order→warehouse pick waves→shipments; supplier step modeled as `supplier_processing`; **sourcing orders: supplier accepts and drives the §23 ladder end-to-end**; **dropship mode: relay a confirmed storefront order to its supplier — per-line direct-to-door parcels (MOQ waived), customer order auto-completes, COD honestly stays pending for the operator** |
 | 21 | Logistics Engine | ✅ | Shipments + normalized checkpoints, forward + reverse codes; **sourcing events ladder (CN pickup → export → customs → NG hub → arrival → AGM putaway)** + **freight rate cards: per-mode lane pricing (base/fuel/customs/min-charge/lead-time) quoted on the Marketstore and snapshotted onto sourcing orders** |
-| 22 | Logistics Abstraction | 🟡 | Carrier field + normalization layer; **AGM: agent warehouses + per-vendor inventory as the local-leg executor**; route engine / multi-carrier integration not built |
-| 23 | Tracking | ✅ | Unified timeline (`TrackingEvent` + `SourcingEvent`, status/order maps) + public tracking page + operator sourcing timeline |
+| 22 | Logistics Abstraction | 🟡 | Carrier field + normalization layer; **AGM: agent warehouses + per-vendor inventory as the local-leg executor**; **dropship as the second fulfillment mode (no AGM leg, ladder ends at the recipient's door)**; route engine / multi-carrier integration not built |
+| 23 | Tracking | ✅ | Unified timeline (`TrackingEvent` + `SourcingEvent`, status/order maps) + public tracking page + operator sourcing timeline; **public /track now renders the dropship corridor for supplier-direct orders, with supplier identity scrubbed from free text (§9)** |
 | 24 | Cash on Delivery | ✅ | COD default, delivery auto-collect, courier remittance register + **AGM agent remittance registers** (collect → remit → reconcile w/ variance → cod_variance true-up), double-entry ledger, /finance UI |
 | 25 | Payments | ✅ | Statuses, refund/void, ledger hooks, provider field; single internal gateway (interface ready) |
 | 26 | Financial Ledger | ✅ | Immutable signed entries for every money event incl. refunds + **sourcing waterfall (sourcing_payment / supplier_payable w/ CNY+FX memo / logistics / payment / luxeen)** |
@@ -68,12 +68,12 @@ Legend: ✅ core built & verified · 🟡 partial (core exists, gaps listed) · 
 | 61 | North-Star Definition | ◻ | Lives in the FastAPI app description |
 | 62 | Final System View | ◻ | Vision framing |
 
-**Score: 43 ✅ core · 4 🟡 partial · 5 ❌ not started · 12 ◻ vision/context** (after Task 15)
+**Score: 44 ✅ core · 3 🟡 partial · 5 ❌ not started · 12 ◻ vision/context** (after Task 16)
 
 ---
 
-## Remaining engineering list (ranked, after Task 15)
+## Remaining engineering list (ranked, after Task 16)
 
 1. **DeepSeek live key (§31)** — flow complete; paste a real key in AI Harness → Provider (or env) whenever Luxeen supplies it.
-2. **Corridor polish** — direct-to-customer dropship mode, supplier comms/messaging (§8).
+2. **Supplier comms/messaging (§8)** — structured negotiation/Q&A between operator and supplier on listings + sourcing orders (identity stays hidden).
 3. **Later bets (§11, §18, §22, §47, §48, §53)** — demand-driven discovery, customer intelligence, route engine / multi-carrier, globalization config, network intelligence, Ascendra referral.
