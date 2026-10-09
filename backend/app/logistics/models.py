@@ -77,3 +77,37 @@ class TrackingEvent(Base):
     description: Mapped[str] = mapped_column(String(1024), default="")
     location: Mapped[str] = mapped_column(String(255), default="")
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+FREIGHT_MODES = ["air", "sea", "express", "road"]
+
+
+class FreightRateCard(Base):
+    """A purchasable freight option on a corridor (plan §21, §57).
+
+    The waterfall used one hardcoded per-kg rate; real corridors price by
+    MODE (air vs sea), with a fixed handling base, fuel surcharges and a
+    customs share of declared value. Cards are data: resolution picks the
+    best active card for (origin, dest, mode) — cheapest effective per-kg
+    when mode is open — and the waterfall falls back to the profile's flat
+    per-kg when nothing matches.
+    """
+
+    __tablename__ = "freight_rate_cards"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    org_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)  # NULL = platform card
+    name: Mapped[str] = mapped_column(String(120))
+    mode: Mapped[str] = mapped_column(String(20), default="air", index=True)
+    origin_country: Mapped[str] = mapped_column(String(2), default="CN")
+    dest_country: Mapped[str] = mapped_column(String(2), default="NG")
+    base_fixed_ngn: Mapped[float] = mapped_column(Float, default=0.0)   # handling/documentation
+    per_kg_ngn: Mapped[float] = mapped_column(Float)                    # headline rate
+    fuel_surcharge_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    customs_pct: Mapped[float] = mapped_column(Float, default=0.0)      # of declared (supplier) value
+    min_charge_ngn: Mapped[float] = mapped_column(Float, default=0.0)
+    lead_time_days_min: Mapped[int] = mapped_column(Integer, default=7)
+    lead_time_days_max: Mapped[int] = mapped_column(Integer, default=14)
+    active: Mapped[int] = mapped_column(Integer, default=1)
+    priority: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

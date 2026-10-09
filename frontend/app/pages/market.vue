@@ -165,7 +165,15 @@ const statusTone = (s: string) =>
         <div v-if="buyTarget" class="quote-box">
           <div class="muted" style="font-size:.75rem;text-transform:uppercase;letter-spacing:.05em">Estimated landed quote</div>
           <div v-for="(v, k) in buyTarget.pricing" :key="k" style="display:flex;justify-content:space-between;font-size:.85rem;margin-top:.25rem">
-            <span class="muted">{{ k.replace(/_/g, ' ') }}</span><span>{{ k.includes('price') || k.includes('total') ? fmt(v) : '₦' + Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 }) }}</span>
+            <span class="muted">{{ k.replace(/_/g, ' ') }}</span><span>{{ k.includes('price') || k.includes('total') ? fmt(v as number) : k.includes('original') ? '¥' + Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 }) : '₦' + Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 }) }}</span>
+          </div>
+          <div v-if="buyTarget.economics?.rate_card" style="margin-top:.45rem;font-size:.74rem" class="muted">
+            Ships via <b>{{ buyTarget.economics.rate_card }}</b>
+            <span v-if="buyTarget.lane_options?.length"> · other lanes:
+              <template v-for="(o, i) in buyTarget.lane_options" :key="o.id">
+                <span v-if="o.mode !== buyTarget.economics?.rate_card?.match(/\((\w+)\)/)?.[1]">{{ i ? ', ' : '' }}{{ o.mode }} ~₦{{ o.effective_per_kg_ngn.toLocaleString() }}/kg ({{ o.lead_time_days_min }}-{{ o.lead_time_days_max }}d)</span>
+              </template>
+            </span>
           </div>
         </div>
         <div class="modal-actions">

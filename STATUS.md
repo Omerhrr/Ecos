@@ -12,11 +12,11 @@ Legend: ✅ core built & verified · 🟡 partial (core exists, gaps listed) · 
 | 5 | Participants | ✅ | Luxeen platform org + operator orgs + suppliers in data model; consumers via public storefront |
 | 6 | Global Commerce Vision | 🟡 | Corridor abstraction: supplier orgs (any origin country), FX table + fallbacks, sourcing orders CN→NG with full ladder; no first-class corridor entity (by design OK for one corridor) |
 | 7 | Core Domains | ✅ | Modular monolith, 28 routers, 45 tables — `automation/` is the only §7 domain with no module |
-| 8 | Supply Network | 🟡 | Suppliers + verification + **supplier portal: self-upload → submit → Luxeen review gate → publish**; supplier orgs + performance/comms depth still light |
+| 8 | Supply Network | 🟡 | Suppliers + verification + **supplier portal: self-upload → submit → Luxeen review gate → publish** + **performance panel (accept rate, transit days, arrival/cancel rates derived from live sourcing)**; comms/messaging still light |
 | 9 | Supplier Isolation | ✅ | `public_card()` + Marketstore/sourcing serializers: operator payloads carry no supplier identity, supplier payloads no buyer identity — smoke-asserted |
 | 10 | Product Catalog | ✅ | Variants/SKUs, video media, per-variant stock guards, PDP option picker, admin variants/videos manager; supplier listings materialise catalog products on publish |
 | 11 | Product Discovery | 🟡 | **Marketstore live**: published listings, category/industry/search filters, NGN supply quotes (§12 waterfall, no retail markup); demand-scored discovery still future |
-| 12 | Pricing Engine | 🟡 | Full waterfall (supplier→logistics→customs→payment→FX→risk→luxeen→operator→price); only % markup configurable |
+| 12 | Pricing Engine | 🟡 | Full waterfall — **now profile-driven (§57 WaterfallProfile: org/lane/category specificity) + §21 freight rate cards (air/sea/express per-kg, fuel, customs, lead time)**; promotions/volume pricing still future |
 | 13 | Operator Store | ✅ | Store w/ branding, currency, country, products, pages |
 | 14 | Storefront Engine | ✅ | Public store/PDP/cart/checkout/order tracking; customer accounts & collections not built |
 | 15 | Landing Page Engine | ✅ | 9-block registry, editor with icon+accent palette thumbnails, immutable publish versions w/ rollback, scheduled auto-publish (60s scheduler), theme/SEO, UTM tagging |
@@ -25,7 +25,7 @@ Legend: ✅ core built & verified · 🟡 partial (core exists, gaps listed) · 
 | 18 | Customer Intelligence | ❌ | Data accumulating (orders/RMAs/attributions); no intelligence features yet |
 | 19 | Order Engine | ✅ | Full state machine w/ branch states, price/cost/weight snapshots, per-line items |
 | 20 | Fulfillment Engine | ✅ | Order→warehouse pick waves→shipments; supplier step modeled as `supplier_processing`; **sourcing orders: supplier accepts and drives the §23 ladder end-to-end** |
-| 21 | Logistics Engine | ✅ | Shipments + normalized checkpoints, forward + reverse codes; **sourcing events ladder (CN pickup → export → customs → NG hub → arrival → AGM putaway)** |
+| 21 | Logistics Engine | ✅ | Shipments + normalized checkpoints, forward + reverse codes; **sourcing events ladder (CN pickup → export → customs → NG hub → arrival → AGM putaway)** + **freight rate cards: per-mode lane pricing (base/fuel/customs/min-charge/lead-time) quoted on the Marketstore and snapshotted onto sourcing orders** |
 | 22 | Logistics Abstraction | 🟡 | Carrier field + normalization layer; **AGM: agent warehouses + per-vendor inventory as the local-leg executor**; route engine / multi-carrier integration not built |
 | 23 | Tracking | ✅ | Unified timeline (`TrackingEvent` + `SourcingEvent`, status/order maps) + public tracking page + operator sourcing timeline |
 | 24 | Cash on Delivery | ✅ | COD default, delivery auto-collect, courier remittance register + **AGM agent remittance registers** (collect → remit → reconcile w/ variance → cod_variance true-up), double-entry ledger, /finance UI |
@@ -48,7 +48,7 @@ Legend: ✅ core built & verified · 🟡 partial (core exists, gaps listed) · 
 | 41 | Automation Engine | ✅ | `automation/` module: WHEN/AND/THEN rules on the event bus (25-event catalog, 11 condition ops, 4 action types incl. settlement-draft), cooldowns, dry-run test, per-rule SAVEPOINT isolation, full match audit + /automation UI |
 | 42 | Architecture Philosophy | ✅ | Folder structure mirrors §42 (fulfillment=warehouse, api=main.py) |
 | 43 | Identity & Tenancy | ✅ | Orgs (luxeen/operator/supplier/agent), roles incl. supplier + agm, per-domain permissions, cross-org isolation, platform staff scope, token refresh |
-| 44 | Security & Audit | 🟡 | Event audit trail + AI run audit; prev/new state capture only on transitions |
+| 44 | Security & Audit | ✅ | **audit_logs domain: semantic depth rows (actor/role/action/object/before/after/changed/source/auth-context/IP) on products, prices, payments, refunds, settlements, AI approvals, market gate, FX, profiles, rate cards, users** + blanket HTTP middleware (every mutating request) + /audit page w/ filters + diff detail; RBAC audit:read (agent/supplier/agm blocked) |
 | 45 | Financial Integrity | ✅ | Immutable ledger, settlement stamping, no mutable money records |
 | 46 | Multi-Currency | ✅ | `fx_rates` + conversion (direct/inverse/triangulated w/ cycle-guard/static), USD pricing page, **sourcing orders in NGN with CNY cost + FX snapshot; supplier payables memo-carried in CNY**; ledger money stays in capture currency (NGN) by design (§45) |
 | 47 | Globalization | ❌ | Country fields only; config-driven country behavior not built |
@@ -61,21 +61,19 @@ Legend: ✅ core built & verified · 🟡 partial (core exists, gaps listed) · 
 | 54 | Plannexis Role | ◻ | Context |
 | 55 | Luxeen Role | ◻ | Context |
 | 56 | Ecos Business Model | ◻ | Context (economics partially modeled in ledger waterfall) |
-| 57 | The Economic Model | 🟡 | Waterfall modeled in ledger; flexible settlement rules pending |
+| 57 | The Economic Model | ✅ | **WaterfallProfile: the §26/§12 rates are DATA** — resolve most-specific active profile (org > platform, corridor, category), freight from §21 rate cards w/ profile fallback, preview endpoint simulates cost→retail under any profile; ledger memos name the profile+card used; UI manages profiles + simulation |
 | 58 | Ecos Control Plane | ◻ | Vision framing |
 | 59 | Long-Term Vision | ◻ | Vision framing |
 | 60 | Fundamental Product Loop | ✅ | Loop closed end-to-end in the running system (source→…→settlement→analytics→restock) |
 | 61 | North-Star Definition | ◻ | Lives in the FastAPI app description |
 | 62 | Final System View | ◻ | Vision framing |
 
-**Score: 41 ✅ core · 6 🟡 partial · 5 ❌ not started · 12 ◻ vision/context** (after Task 14)
+**Score: 43 ✅ core · 4 🟡 partial · 5 ❌ not started · 12 ◻ vision/context** (after Task 15)
 
 ---
 
-## Remaining engineering list (ranked, after Task 14)
+## Remaining engineering list (ranked, after Task 15)
 
-1. **Security depth (§44)** — full before/after audit capture beyond transitions.
-2. **Settlement flexibility (§57)** — configurable settlement splits beyond the fixed waterfall.
-3. **DeepSeek live key (§31)** — flow complete; paste a real key in AI Harness → Provider (or env) whenever Luxeen supplies it.
-4. **Later bets (§11, §18, §22, §47, §48, §53)** — demand-driven discovery, customer intelligence, route engine / multi-carrier, globalization config, network intelligence, Ascendra referral.
-5. **Corridor polish** — supplier performance/comms (§8), direct-to-customer dropship mode, freight rate cards (air/sea per-kg).
+1. **DeepSeek live key (§31)** — flow complete; paste a real key in AI Harness → Provider (or env) whenever Luxeen supplies it.
+2. **Corridor polish** — direct-to-customer dropship mode, supplier comms/messaging (§8).
+3. **Later bets (§11, §18, §22, §47, §48, §53)** — demand-driven discovery, customer intelligence, route engine / multi-carrier, globalization config, network intelligence, Ascendra referral.

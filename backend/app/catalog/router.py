@@ -1,12 +1,13 @@
 import re
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.audit import service as audit_service
 from app.catalog import models as m
 from app.core.database import get_db
-from app.core.deps import require_perm
+from app.core.deps import AuthContext, require_perm
 from app.core.events import publish
 from app.core.pricing import price_product
 from app.supply import models as sm
@@ -237,7 +238,8 @@ def list_products(status: str | None = None, category: str | None = None, db: Se
 
 
 @router.post("", status_code=201, dependencies=[Depends(require_perm("catalog:write"))])
-def create_product(payload: ProductIn, db: Session = Depends(get_db)):
+def create_product(payload: ProductIn, request: Request, db: Session = Depends(get_db),
+                   ctx: AuthContext = Depends(require_perm("catalog:write"))):
     if not db.get(sm.Supplier, payload.supplier_id):
         raise HTTPException(400, "Unknown supplier")
     p = m.Product(**payload.model_dump())
@@ -245,6 +247,13 @@ def create_product(payload: ProductIn, db: Session = Depends(get_db)):
     db.add(p)
     db.flush()
     publish(db, "product.created", {"product_id": p.id, "title": p.title, "supplier_id": p.supplier_id})
+    audit_service.record(
+        db, ctx=ctx, request=request,
+        action="product.created", entity_type="product", entity_id=p.id,
+        after={"title": p.title, "supplier_id": p.supplier_id, "supplier_cost": p.supplier_cost,
+               "currency": p.currency, "status": p.status, "category": p.category},
+        auth_context="catalog:write",
+    )
     db.commit()
     return serialize(db, p)
 
@@ -258,14 +267,31 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
 
 
 @router.patch("/{product_id}", dependencies=[Depends(require_perm("catalog:write"))])
-def patch_product(product_id: int, payload: ProductPatch, db: Session = Depends(get_db)):
+def patch_product(product_id: int, payload: ProductPatch, request: Request,
+                  db: Session = Depends(get_db),
+                  ctx: AuthContext = Depends(require_perm("catalog:write"))):
     p = db.get(m.Product, product_id)
     if not p:
         raise HTTPException(404, "Product not found")
     changes = payload.model_dump(exclude_none=True)
+    before = {k: getattr(p, k) for k in changes}
     for k, v in changes.items():
         setattr(p, k, v)
     publish(db, "product.updated", {"product_id": p.id, "changes": list(changes.keys())})
+    if "supplier_cost" in changes or "markup_pct" in changes:
+        audit_service.record(
+            db, ctx=ctx, request=request,
+            action="product.price_changed", entity_type="product", entity_id=p.id,
+            before=before, after={k: getattr(p, k) for k in changes},
+            changed_only=list(changes.keys()), auth_context="catalog:write",
+        )
+    else:
+        audit_service.record(
+            db, ctx=ctx, request=request,
+            action="product.updated", entity_type="product", entity_id=p.id,
+            before=before, after={k: getattr(p, k) for k in changes},
+            changed_only=list(changes.keys()), auth_context="catalog:write",
+        )
     if changes.get("status") == "active":
         publish(db, "product.published", {"product_id": p.id, "title": p.title})
     db.commit()

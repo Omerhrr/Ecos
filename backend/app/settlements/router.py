@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.audit import service as audit_service
 from app.core.database import get_db
-from app.core.deps import require_perm
+from app.core.deps import AuthContext, require_perm
 from app.settlements import models as m
 from app.settlements import service
 
@@ -32,11 +33,17 @@ def list_runs(db: Session = Depends(get_db)):
 
 
 @router.post("", status_code=201, dependencies=[Depends(require_perm("settlements:write"))])
-def build(body: BuildRunBody, db: Session = Depends(get_db)):
+def build(body: BuildRunBody, request: Request, db: Session = Depends(get_db),
+          ctx: AuthContext = Depends(require_perm("settlements:write"))):
     try:
         run = service.build_run(db, note=body.note, order_ids=body.order_ids)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+    audit_service.record(
+        db, ctx=ctx, request=request,
+        action="settlement.built", entity_type="settlement_run", entity_id=run.id,
+        after=service.serialize_run(db, run), auth_context="settlements:write",
+    )
     db.commit()
     return service.serialize_run(db, run, with_lines=True)
 
@@ -56,22 +63,39 @@ def _load(db: Session, run_id: int) -> m.SettlementRun:
     return run
 
 
+def _audited_transition(db, ctx, request, run, action: str):
+    audit_service.record(
+        db, ctx=ctx, request=request,
+        action=action, entity_type="settlement_run", entity_id=run.id,
+        before={"status": run.status, "total_amount": run.total_amount},
+        after=service.serialize_run(db, run),
+        changed_only=["status", "executed_at"],
+        auth_context="settlements:write",
+    )
+
+
 @router.post("/{run_id}/approve", dependencies=[Depends(require_perm("settlements:write"))])
-def approve(run_id: int, db: Session = Depends(get_db)):
+def approve(run_id: int, request: Request, db: Session = Depends(get_db),
+            ctx: AuthContext = Depends(require_perm("settlements:write"))):
     run = service.approve_run(db, _load(db, run_id))
+    _audited_transition(db, ctx, request, run, "settlement.approved")
     db.commit()
     return service.serialize_run(db, run, with_lines=True)
 
 
 @router.post("/{run_id}/execute", dependencies=[Depends(require_perm("settlements:write"))])
-def execute(run_id: int, db: Session = Depends(get_db)):
+def execute(run_id: int, request: Request, db: Session = Depends(get_db),
+            ctx: AuthContext = Depends(require_perm("settlements:write"))):
     run = service.execute_run(db, _load(db, run_id))
+    _audited_transition(db, ctx, request, run, "settlement.executed")
     db.commit()
     return service.serialize_run(db, run, with_lines=True)
 
 
 @router.post("/{run_id}/cancel", dependencies=[Depends(require_perm("settlements:write"))])
-def cancel(run_id: int, db: Session = Depends(get_db)):
+def cancel(run_id: int, request: Request, db: Session = Depends(get_db),
+           ctx: AuthContext = Depends(require_perm("settlements:write"))):
     run = service.cancel_run(db, _load(db, run_id))
+    _audited_transition(db, ctx, request, run, "settlement.cancelled")
     db.commit()
     return service.serialize_run(db, run, with_lines=True)

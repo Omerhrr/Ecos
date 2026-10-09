@@ -658,6 +658,101 @@ export interface FxRateRow {
   updated_at: string | null
 }
 
+/* ---------------- §57 economics profiles / §21 freight cards / §44 audit ---------------- */
+
+export interface WaterfallProfile {
+  id: number
+  org_id: number | null
+  name: string
+  corridor: string
+  category: string
+  payment_cost_pct: number | null
+  luxeen_margin_pct: number | null
+  operator_markup_pct: number | null
+  logistics_per_kg_ngn: number | null
+  tax_pct: number | null
+  active: boolean
+  priority: number
+  created_at: string | null
+}
+
+export interface WaterfallPreview {
+  fx: { amount: number; rate: number; from: string; to: string; source: string }
+  profile: Record<string, unknown>
+  rate_card: FreightRateCard | null
+  waterfall: {
+    supplier_ngn: number
+    freight_ngn: number
+    customs_ngn: number
+    logistics_ngn: number
+    payment_ngn: number
+    luxeen_ngn: number
+    economics_basis: Record<string, unknown>
+  }
+  supply_total_ngn: number
+  ecos_price_ngn: number
+}
+
+export interface FreightRateCard {
+  id: number
+  org_id: number | null
+  name: string
+  mode: string
+  origin_country: string
+  dest_country: string
+  base_fixed_ngn: number
+  per_kg_ngn: number
+  fuel_surcharge_pct: number
+  customs_pct: number
+  min_charge_ngn: number
+  lead_time_days_min: number
+  lead_time_days_max: number
+  active: boolean
+  priority: number
+  effective_per_kg_ngn: number
+}
+
+export interface AuditRow {
+  id: number
+  org_id: number | null
+  actor_user_id: number | null
+  actor_label: string
+  actor_role: string
+  action: string
+  entity_type: string
+  entity_id: string
+  before: Record<string, unknown> | null
+  after: Record<string, unknown> | null
+  changed: Record<string, { from: unknown; to: unknown }> | null
+  source: string
+  method: string
+  path: string
+  ip: string
+  auth_context: string
+  created_at: string | null
+}
+
+export interface SupplierPerf {
+  supplier_id: number
+  name: string
+  city: string
+  country: string
+  status: string
+  listings: { total: number; by_status: Record<string, number>; published: number }
+  sourcing: {
+    orders_total: number
+    cancelled: number
+    cancel_rate: number | null
+    accept_rate: number | null
+    avg_accept_hours: number | null
+    avg_transit_days: number | null
+    arrival_rate: number | null
+    received_orders: number
+    units_received: number
+  }
+  last_activity: string | null
+}
+
 export interface FxMoney {
   amount: number
   rate: number
@@ -976,6 +1071,8 @@ export interface MarketListing {
   currency: string
   unit_price: number
   pricing: Record<string, number>
+  economics: { profile_id: number | null; profile_name: string; rate_card: string; rate_card_id: number | null }
+  lane_options: FreightRateCard[]
   available_from: string
   lead_time_days: number
 }
@@ -1269,6 +1366,24 @@ export function useApi() {
     fxRates: () => req<{ rates: FxRateRow[]; supported: string[] }>('/api/finance/fx'),
     setFxRate: (body: { base: string; quote: string; rate: number }) =>
       req<FxRateRow>('/api/finance/fx', { method: 'POST', body }),
+
+    // ---- §57 economics profiles / §21 freight cards / §44 audit / §8 perf ----
+    waterfallProfiles: () =>
+      req<{ profiles: WaterfallProfile[]; defaults: { payment_cost_pct: number; luxeen_margin_pct: number; logistics_per_kg_ngn: number } }>('/api/finance/profiles'),
+    createProfile: (body: Partial<WaterfallProfile>) =>
+      req<WaterfallProfile>('/api/finance/profiles', { method: 'POST', body }),
+    patchProfile: (id: number, body: Partial<WaterfallProfile>) =>
+      req<WaterfallProfile>(`/api/finance/profiles/${id}`, { method: 'PATCH', body }),
+    previewWaterfall: (body: { supplier_cost: number; currency?: string; weight_kg?: number; qty?: number; org_id?: number | null; category?: string; markup_pct?: number | null }) =>
+      req<WaterfallPreview>('/api/finance/profiles/preview', { method: 'POST', body }),
+    freightCards: () => req<{ cards: FreightRateCard[]; modes: string[] }>('/api/freight/cards'),
+    createFreightCard: (body: Partial<FreightRateCard>) =>
+      req<FreightRateCard>('/api/freight/cards', { method: 'POST', body }),
+    patchFreightCard: (id: number, body: Partial<FreightRateCard>) =>
+      req<FreightRateCard>(`/api/freight/cards/${id}`, { method: 'PATCH', body }),
+    audit: (params?: { entity_type?: string; entity_id?: string; action?: string; source?: string; include_http?: boolean; limit?: number }) =>
+      req<AuditRow[]>('/api/audit', { params }),
+    supplierPerformance: () => req<{ suppliers: SupplierPerf[] }>('/api/suppliers/performance/summary'),
 
     suppliers: () => req<Supplier[]>('/api/suppliers'),
     stores: () => req<Store[]>('/api/stores'),

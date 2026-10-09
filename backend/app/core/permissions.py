@@ -36,6 +36,7 @@ READ_PERMISSIONS = [
     "analytics:read",
     "automation:read",
     "market:read",
+    "audit:read",
 ]
 
 ALL_PERMISSIONS = READ_PERMISSIONS + [

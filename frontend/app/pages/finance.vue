@@ -100,10 +100,75 @@ async function reconcile(r: CodRegister) {
   }
 }
 
+// §57 economics profiles
+const profiles = ref<WaterfallProfile[]>([])
+const defaults = ref<{ payment_cost_pct: number; luxeen_margin_pct: number; logistics_per_kg_ngn: number } | null>(null)
+const profMsg = ref('')
+const profErr = ref('')
+const profForm = reactive({ name: '', corridor: 'CN>NG', category: '', payment_cost_pct: '', luxeen_margin_pct: '', operator_markup_pct: '', logistics_per_kg_ngn: '', tax_pct: '', priority: 0 })
+const previewForm = reactive({ supplier_cost: '200', weight_kg: '1', qty: '1', category: '' })
+const previewOut = ref<WaterfallPreview | null>(null)
+const previewBusy = ref(false)
+
+async function loadProfiles() {
+  try {
+    const r = await api.waterfallProfiles()
+    profiles.value = r.profiles
+    defaults.value = r.defaults
+  }
+  catch { /* no finance:read — panel stays hidden */ }
+}
+
+async function createProfile() {
+  profErr.value = ''; profMsg.value = ''
+  try {
+    const p = await api.createProfile({
+      name: profForm.name,
+      corridor: profForm.corridor,
+      category: profForm.category,
+      payment_cost_pct: profForm.payment_cost_pct === '' ? null : Number(profForm.payment_cost_pct),
+      luxeen_margin_pct: profForm.luxeen_margin_pct === '' ? null : Number(profForm.luxeen_margin_pct),
+      operator_markup_pct: profForm.operator_markup_pct === '' ? null : Number(profForm.operator_markup_pct),
+      logistics_per_kg_ngn: profForm.logistics_per_kg_ngn === '' ? null : Number(profForm.logistics_per_kg_ngn),
+      tax_pct: profForm.tax_pct === '' ? null : Number(profForm.tax_pct),
+      priority: profForm.priority,
+      active: true,
+    })
+    profMsg.value = `Profile "${p.name}" created — the waterfall now uses it wherever it is the most specific match`
+    profForm.name = ''; profForm.category = ''
+    await loadProfiles()
+  }
+  catch (e: unknown) {
+    profErr.value = (e as { response?: { _data?: { detail?: string } } })?.response?._data?.detail ?? 'Could not create the profile'
+  }
+}
+
+async function toggleProfile(p: WaterfallProfile) {
+  await api.patchProfile(p.id, { active: !p.active })
+  await loadProfiles()
+}
+
+async function runPreview() {
+  previewBusy.value = true
+  profErr.value = ''
+  try {
+    previewOut.value = await api.previewWaterfall({
+      supplier_cost: Number(previewForm.supplier_cost),
+      weight_kg: Number(previewForm.weight_kg),
+      qty: Number(previewForm.qty),
+      category: previewForm.category || undefined,
+    })
+  }
+  catch (e: unknown) {
+    profErr.value = (e as { response?: { _data?: { detail?: string } } })?.response?._data?.detail ?? 'Preview failed'
+  }
+  finally { previewBusy.value = false }
+}
+
 onMounted(async () => {
   try { data.value = await api.ledger() }
   finally { loading.value = false }
-  await Promise.all([loadFx(), loadCod()])
+  await Promise.all([loadFx(), loadCod(), loadProfiles()])
 })
 
 const balance = computed(() =>
@@ -197,6 +262,81 @@ async function saveRate(row: FxRateRow) {
         </table>
         <div v-else class="empty">No rates yet</div>
         <NuxtLink to="/pricing" target="_blank" class="muted" style="font-size:.78rem">See the public USD pricing page →</NuxtLink>
+      </div>
+
+      <!-- §57 economics profiles -->
+      <div class="card" style="padding:1rem 1.2rem;margin:1rem 0">
+        <div class="row" style="justify-content:space-between;align-items:baseline">
+          <h3 style="margin:0">Economics profiles (§57)</h3>
+          <span class="muted" style="font-size:.76rem">the waterfall's rates are DATA — most specific active profile wins (org > platform, lane, category)</span>
+        </div>
+        <div v-if="profMsg" class="fx-msg ok">{{ profMsg }}</div>
+        <div v-if="profErr" class="fx-msg err">{{ profErr }}</div>
+
+        <table v-if="profiles.length">
+          <thead><tr><th>Profile</th><th>Lane</th><th>Category</th><th>Payment</th><th>Luxeen</th><th>Markup</th><th>Per-kg</th><th>Tax</th><th>Active</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="p in profiles" :key="p.id" :style="{ opacity: p.active ? 1 : 0.45 }">
+              <td><b>{{ p.name }}</b> <span v-if="p.org_id" class="badge blue" style="font-size:.6rem">org {{ p.org_id }}</span><span v-else class="badge gray" style="font-size:.6rem">platform</span></td>
+              <td class="mono">{{ p.corridor || 'any' }}</td>
+              <td>{{ p.category || 'any' }}</td>
+              <td class="mono">{{ p.payment_cost_pct != null ? (p.payment_cost_pct * 100).toFixed(1) + '%' : '—' }}</td>
+              <td class="mono">{{ p.luxeen_margin_pct != null ? (p.luxeen_margin_pct * 100).toFixed(1) + '%' : '—' }}</td>
+              <td class="mono">{{ p.operator_markup_pct != null ? (p.operator_markup_pct * 100).toFixed(0) + '%' : '—' }}</td>
+              <td class="mono">{{ p.logistics_per_kg_ngn != null ? money(p.logistics_per_kg_ngn) : '—' }}</td>
+              <td class="mono">{{ p.tax_pct ? (p.tax_pct * 100).toFixed(1) + '%' : '—' }}</td>
+              <td><span class="badge" :class="p.active ? 'green' : 'gray'">{{ p.active ? 'active' : 'off' }}</span></td>
+              <td><button class="small ghost" @click="toggleProfile(p)">{{ p.active ? 'Disable' : 'Enable' }}</button></td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-if="defaults" class="muted" style="font-size:.74rem;margin:.4rem 0">
+          Fallback constants when no profile matches: payment {{ (defaults.payment_cost_pct * 100).toFixed(1) }}% · luxeen {{ (defaults.luxeen_margin_pct * 100).toFixed(1) }}% · logistics {{ money(defaults.logistics_per_kg_ngn) }}/kg
+        </div>
+
+        <div class="profile-forms">
+          <div class="profile-form">
+            <b style="font-size:.8rem">New profile</b>
+            <div class="row" style="gap:.4rem;flex-wrap:wrap;margin-top:.4rem">
+              <input v-model="profForm.name" placeholder="Name — e.g. Electronics premium" style="max-width:14rem">
+              <input v-model="profForm.corridor" placeholder="Lane CN>NG" style="max-width:7rem">
+              <input v-model="profForm.category" placeholder="Category (blank = any)" style="max-width:10rem">
+              <input v-model="profForm.payment_cost_pct" type="number" step="0.001" placeholder="payment %" style="max-width:7rem">
+              <input v-model="profForm.luxeen_margin_pct" type="number" step="0.001" placeholder="luxeen %" style="max-width:7rem">
+              <input v-model="profForm.operator_markup_pct" type="number" step="0.01" placeholder="markup %" style="max-width:7rem">
+              <input v-model="profForm.logistics_per_kg_ngn" type="number" placeholder="₦/kg" style="max-width:7rem">
+              <input v-model="profForm.tax_pct" type="number" step="0.001" placeholder="tax %" style="max-width:6rem">
+            </div>
+            <button style="margin-top:.5rem" :disabled="!profForm.name" @click="createProfile">Create profile</button>
+          </div>
+          <div class="profile-form">
+            <b style="font-size:.8rem">Simulate the waterfall</b>
+            <div class="row" style="gap:.4rem;flex-wrap:wrap;margin-top:.4rem">
+              <input v-model="previewForm.supplier_cost" type="number" placeholder="cost (CNY)" style="max-width:8rem">
+              <input v-model="previewForm.weight_kg" type="number" step="0.1" placeholder="kg" style="max-width:6rem">
+              <input v-model="previewForm.qty" type="number" min="1" placeholder="qty" style="max-width:5rem">
+              <input v-model="previewForm.category" placeholder="category" style="max-width:10rem">
+              <button class="ghost" :disabled="previewBusy" @click="runPreview">Preview</button>
+            </div>
+            <div v-if="previewOut" class="preview-out">
+              <div class="row" style="gap:.4rem;flex-wrap:wrap">
+                <span class="badge blue">{{ (previewOut.profile as any).profile_name }}</span>
+                <span v-if="previewOut.rate_card" class="badge green">{{ previewOut.rate_card.name }} · {{ previewOut.rate_card.mode }} · {{ previewOut.rate_card.lead_time_days_min }}-{{ previewOut.rate_card.lead_time_days_max }}d</span>
+              </div>
+              <table style="margin-top:.5rem">
+                <tbody>
+                  <tr><td>Supplier cost</td><td class="mono">{{ money(previewOut.waterfall.supplier_ngn) }}</td></tr>
+                  <tr><td>Freight</td><td class="mono">{{ money(previewOut.waterfall.freight_ngn) }}</td></tr>
+                  <tr><td>Customs</td><td class="mono">{{ money(previewOut.waterfall.customs_ngn) }}</td></tr>
+                  <tr><td>Payment cost</td><td class="mono">{{ money(previewOut.waterfall.payment_ngn) }}</td></tr>
+                  <tr><td>Luxeen economics</td><td class="mono">{{ money(previewOut.waterfall.luxeen_ngn) }}</td></tr>
+                  <tr><td><b>Supply total (operator pays)</b></td><td class="mono"><b>{{ money(previewOut.supply_total_ngn) }}</b></td></tr>
+                  <tr><td>Ecos price (retail)</td><td class="mono">{{ money(previewOut.ecos_price_ngn) }}</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- §24 COD remittance register -->
@@ -336,4 +476,9 @@ async function saveRate(row: FxRateRow) {
   background: #131b2c;
 }
 .cod-inline { border-top: 1px dashed #26324a; padding-top: .7rem; }
+.profile-forms { display: grid; grid-template-columns: 1.1fr 1fr; gap: 1rem; border-top: 1px dashed #26324a; padding-top: .8rem; margin-top: .8rem; }
+.profile-form { background: #131b2c; border: 1px solid #26324a; border-radius: 10px; padding: .8rem; }
+.preview-out table td { padding: .18rem .5rem; font-size: .78rem; }
+.preview-out table td:first-child { color: #94a3b8; }
+@media (max-width: 1100px) { .profile-forms { grid-template-columns: 1fr; } }
 </style>

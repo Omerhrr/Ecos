@@ -38,6 +38,7 @@ from app.automation import models as automation_models  # noqa: F401,E402
 from app.cod import models as cod_models  # noqa: F401,E402
 from app.market import models as market_models  # noqa: F401,E402
 from app.agm import models as agm_models  # noqa: F401,E402
+from app.audit import models as audit_models  # noqa: F401,E402
 
 from app.core.seed import seed_if_empty  # noqa: E402
 from app.core.deps import require_auth  # noqa: E402
@@ -68,6 +69,8 @@ from app.market.router import router as market_router  # noqa: E402
 from app.market.router import portal as market_portal_router  # noqa: E402
 from app.market.router import admin as market_admin_router  # noqa: E402
 from app.agm.router import router as agm_router  # noqa: E402
+from app.audit.router import router as audit_router  # noqa: E402
+from app.logistics.router import rates_router as freight_router  # noqa: E402
 from app.core.models import DomainEvent  # noqa: E402
 
 
@@ -113,6 +116,13 @@ async def lifespan(app: FastAPI):
         from app.core import seed_market
 
         seed_market.seed_market_if_missing(db)
+        db.commit()
+
+        # §21/§57 economics defaults: platform waterfall profile + freight
+        # rate cards, upserted every boot so existing DBs gain them too.
+        from app.core import seed_economics
+
+        seed_economics.seed_economics_if_missing(db)
         db.commit()
 
         # §31-38: orgs that already adopted the harness gain newly built
@@ -198,9 +208,42 @@ for r in [
     returns_router, settlements_router, ai_router, notifications_router,
     procurement_router, warehouse_router, analytics_router, automation_router,
     cod_router, market_router, market_portal_router, market_admin_router,
-    agm_router,
+    agm_router, freight_router, audit_router,
 ]:
     app.include_router(r, prefix="/api")
+
+
+# §44 blanket audit layer: every mutating request gets one row (actor, role,
+# method, path, IP, status). Runs AFTER the response so the status is known;
+# failures never touch the response.
+from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
+
+
+class AuditMiddleware(BaseHTTPMiddleware):
+    MUTATING = {"POST", "PATCH", "PUT", "DELETE"}
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        if request.method in self.MUTATING and request.url.path.startswith("/api"):
+            try:
+                from app.core.security import decode_token
+
+                auth = request.headers.get("authorization", "")
+                payload = decode_token(auth[7:].strip()) if auth.lower().startswith("bearer ") else None
+                with SessionLocal() as db:
+                    from app.audit import service as audit_svc
+
+                    audit_svc.record_http(
+                        db, request=request,
+                        status_code=response.status_code,
+                        token_payload=payload,
+                    )
+            except Exception:  # noqa: BLE001 — audit must never break responses
+                print("[audit] middleware failed:\n" + traceback.format_exc())
+        return response
+
+
+app.add_middleware(AuditMiddleware)
 
 
 @app.get("/api/health", tags=["health"])

@@ -43,6 +43,37 @@ class LedgerEntry(Base):
     settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class WaterfallProfile(Base):
+    """Configurable economics profile (plan §57 — flexible settlement rules).
+
+    The actual waterfall depends on the transaction, country, taxes, payment
+    method, logistics arrangement and commercial agreements — so the rates the
+    §26 waterfall uses are DATA, not code. Resolution picks the most specific
+    active profile (org > platform, corridor match, category match) with the
+    static constants as the fallback, so behaviour never changes until a
+    profile is actually configured.
+    """
+
+    __tablename__ = "waterfall_profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    org_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)  # NULL = platform default
+    name: Mapped[str] = mapped_column(String(120))
+    corridor: Mapped[str] = mapped_column(String(20), default="")   # e.g. "CN>NG"; "" = any
+    category: Mapped[str] = mapped_column(String(60), default="")   # product category; "" = any
+    payment_cost_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    luxeen_margin_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    operator_markup_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    logistics_per_kg_ngn: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tax_pct: Mapped[float | None] = mapped_column(Float, nullable=True)  # folded into the logistics bucket, memo'd
+    active: Mapped[int] = mapped_column(Integer, default=1)
+    priority: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=True
+    )
+
+
 class FxRate(Base):
     """FX rate table (plan §46 — multi-currency).
 

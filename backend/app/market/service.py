@@ -30,11 +30,9 @@ from sqlalchemy.orm import Session
 from app.agm import models as agm_m
 from app.catalog import models as cm
 from app.core import events
-from app.core.pricing import (
-    LOGISTICS_NGN_PER_KG,
-    PAYMENT_COST_PCT,
-)
+from app.finance import economics
 from app.finance import fx as fx_service
+from app.logistics import rates as rates_service
 from app.market import models as m
 from app.supply import models as sm
 
@@ -63,20 +61,40 @@ def _unique_slug(db: Session, title: str) -> str:
 # Pricing — the supply price an operator pays on the Marketstore (§12, §46)
 # ---------------------------------------------------------------------------
 
-def supply_quote(db: Session, sp: m.SupplierProduct, *, qty: int = 1) -> dict[str, Any]:
+def supply_quote(db: Session, sp: m.SupplierProduct, *, qty: int = 1,
+                 org_id: int | None = None) -> dict[str, Any]:
     """Cost waterfall for one sourcing line, in the operator's local currency.
 
-    Marketstore price = supplier cost (converted) + intl logistics per kg
-    + payment cost + Luxeen economics. No retail markup — the buyer IS the
+    Marketstore price = supplier cost (converted) + intl freight (§21 rate
+    card for the lane, profile per-kg fallback) + payment cost + Luxeen
+    economics. No retail markup — the buyer IS the
     operator; their own markup applies later in their storefront (§12).
     """
     conv = fx_service.convert(db, float(sp.cost_price), sp.currency or "CNY", "NGN")
     supplier_ngn = float(conv["amount"])
     rate = float(conv["rate"])
-    logistics = (float(sp.weight_kg) * qty) * LOGISTICS_NGN_PER_KG
-    payment = (supplier_ngn * qty + logistics) * PAYMENT_COST_PCT
-    luxeen = supplier_ngn * qty * 0.08  # network economics share (§57)
+    profile = economics.resolve_profile(
+        db, org_id=org_id, origin="CN", dest="NG", category=sp.category,
+    )
+    card = rates_service.resolve_rate(db, origin="CN", dest="NG", org_id=org_id)
+    freight = rates_service.freight_cost(
+        card, declared_value_ngn=supplier_ngn * qty,
+        weight_total_kg=float(sp.weight_kg) * qty,
+    ) if card else None
+
+    if freight:
+        logistics = freight["freight_ngn"] + freight["customs_ngn"]
+        card_label = f"{card['name']} ({card['mode']})"
+    else:
+        logistics = profile["logistics_per_kg_ngn"] * float(sp.weight_kg) * qty
+        logistics += supplier_ngn * qty * profile.get("tax_pct", 0.0)
+        card_label = "profile per-kg"
+    payment = (supplier_ngn * qty + logistics) * profile["payment_cost_pct"]
+    luxeen = supplier_ngn * qty * profile["luxeen_margin_pct"]
     total = _round5(supplier_ngn * qty + logistics + payment + luxeen)
+    lead = None
+    if card:
+        lead = (int(card["lead_time_days_min"]) + int(card["lead_time_days_max"])) // 2
     return {
         "unit_supplier_cost_original": float(sp.cost_price),
         "currency_original": sp.currency or "CNY",
@@ -84,10 +102,21 @@ def supply_quote(db: Session, sp: m.SupplierProduct, *, qty: int = 1) -> dict[st
         "fx_source": conv["source"],
         "unit_supplier_ngn": round(supplier_ngn, 2),
         "logistics_ngn": round(logistics, 2),
+        "freight_ngn": round(freight["freight_ngn"], 2) if freight else round(logistics, 2),
+        "customs_ngn": round(freight["customs_ngn"], 2) if freight else 0.0,
         "payment_ngn": round(payment, 2),
         "luxeen_ngn": round(luxeen, 2),
         "unit_supply_price_ngn": _round5(supplier_ngn + logistics / qty + payment / qty + luxeen / qty),
         "total_supply_price_ngn": total,
+        "lead_time_days": lead,
+        "economics": {
+            "profile_id": profile["profile_id"],
+            "profile_name": profile["profile_name"],
+            "rate_card": card_label,
+            "rate_card_id": card["id"] if card else None,
+        },
+        # §21: the lane's other modes, so the buyer sees air vs sea honestly
+        "lane_options": rates_service.lane_options(db, origin="CN", dest="NG", org_id=org_id),
     }
 
 
@@ -227,7 +256,8 @@ def create_sourcing_order(
     if qty < sp.moq:
         raise ValueError(f"Minimum order quantity is {sp.moq}")
 
-    quote = supply_quote(db, sp, qty=qty)
+    quote = supply_quote(db, sp, qty=qty, org_id=org_id)
+    card_snapshot = rates_service.resolve_rate(db, origin="CN", dest="NG", org_id=org_id)
     agent_wh = None
     if agent_org_id:
         agent_wh = agm_service.ensure_default_agent_warehouse(db, agent_org_id)
@@ -246,6 +276,7 @@ def create_sourcing_order(
         fx_rate=quote["fx_rate"], local_currency="NGN",
         local_total=quote["total_supply_price_ngn"],
         weight_kg=float(sp.weight_kg),
+        rate_card_snapshot=card_snapshot,
         agent_org_id=agent_org_id,
         dest_name=dest_name[:255], dest_phone=dest_phone[:50],
         dest_address=dest_address[:1024], dest_city=dest_city[:100],
@@ -275,6 +306,8 @@ def pay_sourcing_order(
     via the `sourcing.paid` subscriber (§26) and the supplier is alerted."""
     if so.status != "pending_payment":
         raise ValueError(f"Sourcing order {so.order_number} is {so.status}, not awaiting payment")
+    sp = db.get(m.SupplierProduct, so.supplier_product_id)
+    sp_category = sp.category if sp else None
     so.status = "paid"
     so.payment_method = method
     so.payment_reference = reference or f"SRC-PAY-{so.id:08d}"
@@ -285,6 +318,7 @@ def pay_sourcing_order(
         "amount_ngn": so.local_total, "cny_total": so.cny_total,
         "fx_rate": so.fx_rate, "weight_kg": so.weight_kg, "qty": so.qty,
         "method": so.payment_method,
+        "category": sp_category, "rate_card": so.rate_card_snapshot,
     })
     events.publish(db, "sourcing.submitted", {
         "sourcing_order_id": so.id, "order_number": so.order_number,
@@ -393,6 +427,11 @@ def receive_sourcing_order(
 def serialize_listing(db: Session, sp: m.SupplierProduct) -> dict[str, Any]:
     """MARKETSTORE view — what operators see. Zero supplier identity."""
     quote = supply_quote(db, sp)
+    # the quote box only renders scalar components — structured extras go flat
+    pricing = {
+        k: v for k, v in quote.items()
+        if k not in ("economics", "lane_options") and not isinstance(v, (dict, list))
+    }
     return {
         "id": sp.id,
         "catalog_product_id": sp.catalog_product_id,
@@ -406,9 +445,11 @@ def serialize_listing(db: Session, sp: m.SupplierProduct) -> dict[str, Any]:
         "weight_kg": sp.weight_kg,
         "currency": "NGN",
         "unit_price": quote["unit_supply_price_ngn"],
-        "pricing": quote,
+        "pricing": pricing,
+        "economics": quote["economics"],
+        "lane_options": quote["lane_options"],
         "available_from": "Ecos Network",
-        "lead_time_days": 14,
+        "lead_time_days": quote.get("lead_time_days") or 14,
     }
 
 

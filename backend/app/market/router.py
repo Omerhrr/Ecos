@@ -11,10 +11,11 @@ are platform-staff only.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.audit import service as audit_service
 from app.core.database import get_db
 from app.core.deps import AuthContext, require_auth, require_perm, require_role
 from app.core.events import publish
@@ -399,37 +400,52 @@ def admin_products(
 
 @admin.post("/products/{sp_id}/review")
 def admin_review(
-    sp_id: int, payload: ReviewIn,
+    sp_id: int, payload: ReviewIn, request: Request,
     db: Session = Depends(get_db),
     ctx: AuthContext = Depends(require_platform),
 ):
     sp = db.get(m.SupplierProduct, sp_id)
     if sp is None:
         raise HTTPException(404, "Listing not found")
+    before = {"status": sp.status, "review_notes": sp.review_notes}
     try:
         svc.review_product(db, sp, decision=payload.decision, notes=payload.notes, reviewed_by=ctx.user.id)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    audit_service.record(
+        db, ctx=ctx, request=request,
+        action="market.product_reviewed", entity_type="supplier_product", entity_id=sp.id,
+        before=before, after={"status": sp.status, "review_notes": sp.review_notes},
+        changed_only=["status", "review_notes"], auth_context="platform",
+    )
     db.commit()
     return svc.serialize_supplier_product(sp, supplier_view=True)
 
 
 @admin.post("/products/{sp_id}/publish")
-def admin_publish(sp_id: int, db: Session = Depends(get_db), ctx: AuthContext = Depends(require_platform)):
+def admin_publish(sp_id: int, request: Request, db: Session = Depends(get_db),
+                  ctx: AuthContext = Depends(require_platform)):
     sp = db.get(m.SupplierProduct, sp_id)
     if sp is None:
         raise HTTPException(404, "Listing not found")
+    before = {"status": sp.status, "catalog_product_id": sp.catalog_product_id}
     try:
         svc.publish_product(db, sp, published_by=ctx.user.id)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    audit_service.record(
+        db, ctx=ctx, request=request,
+        action="market.product_published", entity_type="supplier_product", entity_id=sp.id,
+        before=before, after={"status": sp.status, "catalog_product_id": sp.catalog_product_id},
+        changed_only=["status", "catalog_product_id"], auth_context="platform",
+    )
     db.commit()
     return svc.serialize_supplier_product(sp, supplier_view=True)
 
 
 @admin.post("/supplier-orgs", status_code=201)
 def admin_create_supplier_org(
-    payload: SupplierOrgIn,
+    payload: SupplierOrgIn, request: Request,
     db: Session = Depends(get_db),
     ctx: AuthContext = Depends(require_platform),
 ):
@@ -456,6 +472,12 @@ def admin_create_supplier_org(
     db.flush()
     publish(db, "supplier.created", {"supplier_id": supplier.id, "name": supplier.name, "org_id": org.id})
     publish(db, "user.created", {"user_id": user.id, "org_id": org.id, "role": "supplier"})
+    audit_service.record(
+        db, ctx=ctx, request=request,
+        action="market.supplier_org_provisioned", entity_type="supplier_org", entity_id=org.id,
+        after={"org": org.name, "supplier_id": supplier.id, "user_id": user.id, "email": email},
+        auth_context="platform",
+    )
     db.commit()
     return {
         "org": {"id": org.id, "name": org.name, "type": org.type},

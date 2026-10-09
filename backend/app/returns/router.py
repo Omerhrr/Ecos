@@ -1,11 +1,12 @@
 """Returns / RMA API (plan §28)."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.audit import service as audit_service
 from app.core.database import get_db
-from app.core.deps import require_perm
+from app.core.deps import AuthContext, require_perm
 from app.crm import models as crm_m
 from app.orders import models as om
 from app.returns import models as m
@@ -146,14 +147,22 @@ def receive(rma_id: int, warehouse_id: int | None = None, db: Session = Depends(
 
 
 @router.post("/{rma_id}/refund", dependencies=[Depends(require_perm("returns:write"))])
-def refund(rma_id: int, db: Session = Depends(get_db)):
+def refund(rma_id: int, request: Request, db: Session = Depends(get_db),
+           ctx: AuthContext = Depends(require_perm("returns:write"))):
     r = db.get(m.ReturnOrder, rma_id)
     if not r:
         raise HTTPException(404, "Return not found")
+    before = serialize(db, r)
     try:
         service.refund(db, r)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    audit_service.record(
+        db, ctx=ctx, request=request,
+        action="payment.refunded", entity_type="return_order", entity_id=r.id,
+        before=before, after=serialize(db, r),
+        changed_only=["status", "refund_amount"], auth_context="returns:write",
+    )
     db.commit()
     return serialize(db, r)
 

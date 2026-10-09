@@ -139,6 +139,9 @@ class SourcingOrder(Base):
     local_currency: Mapped[str] = mapped_column(String(3), default="NGN")
     local_total: Mapped[float] = mapped_column(Float, default=0.0)
     weight_kg: Mapped[float] = mapped_column(Float, default=0.5)  # per unit snapshot
+    # §21/§57 snapshot: the freight card the quote priced, so the paid-order
+    # ledger waterfall always matches what the operator saw at purchase time
+    rate_card_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="pending_payment", index=True)
     payment_method: Mapped[str] = mapped_column(String(30), default="wallet")
     payment_reference: Mapped[str] = mapped_column(String(100), default="")

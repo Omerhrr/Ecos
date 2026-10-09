@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.ai_harness import models as m
 from app.ai_harness import operators as ops
 from app.ai_harness import service
+from app.audit import service as audit_service
 from app.core.database import get_db
 from app.core.deps import require_perm, AuthContext
 from app.core import llm
@@ -192,13 +193,25 @@ def get_run(run_id: int, db: Session = Depends(get_db)):
 )
 def approve_run(
     run_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     ctx: AuthContext = Depends(require_perm("ai_harness:approve")),
 ):
+    target = _load_run(db, run_id)
     try:
-        run = service.approve_run(db, _load_run(db, run_id), actor={"user_id": ctx.user.id})
+        run = service.approve_run(db, target, actor={"user_id": ctx.user.id})
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+    operator = db.get(m.AiOperator, run.operator_id)
+    audit_service.record(
+        db, ctx=ctx, request=request,
+        action="ai.run_approved", entity_type="ai_run", entity_id=run.id,
+        before={"proposal_status": target.proposal_status},
+        after={"proposal_status": run.proposal_status,
+               "operator": operator.code if operator else str(run.operator_id)},
+        changed_only=["proposal_status", "approved_by", "approved_at"],
+        source="ai", auth_context="ai_harness:approve",
+    )
     db.commit()
     return service.serialize_run(db, run)
 

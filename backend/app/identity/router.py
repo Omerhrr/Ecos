@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.audit import service as audit_service
 from app.core.database import get_db
 from app.core.deps import AuthContext, require_auth, require_perm
 from app.core.events import publish
@@ -59,6 +60,7 @@ def list_users(ctx: AuthContext = Depends(require_auth), db: Session = Depends(g
 @router.post("/users", status_code=201)
 def create_user(
     payload: UserIn,
+    request: Request,
     ctx: AuthContext = Depends(require_perm("identity:manage")),
     db: Session = Depends(get_db),
 ):
@@ -77,6 +79,12 @@ def create_user(
     db.add(user)
     db.flush()
     publish(db, "user.created", {"user_id": user.id, "org_id": org_id, "role": user.role})
+    audit_service.record(
+        db, ctx=ctx, request=request,
+        action="identity.user_created", entity_type="user", entity_id=user.id,
+        after={"name": user.name, "email": user.email, "role": user.role, "org_id": org_id},
+        auth_context="identity:manage",
+    )
     db.commit()
     return user_dict(user)
 

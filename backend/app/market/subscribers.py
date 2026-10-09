@@ -17,8 +17,8 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.core import events
-from app.core.pricing import LOGISTICS_NGN_PER_KG, PAYMENT_COST_PCT
 from app.finance import models as fm
+from app.finance.economics import compute_waterfall, resolve_profile
 from app.notifications import service as notif_service
 from app.supply import models as sm
 
@@ -30,10 +30,20 @@ def _on_sourcing_paid(db: Session, payload: dict) -> None:
     qty = int(payload.get("qty") or 1)
     weight = float(payload.get("weight_kg") or 0.5)
     order_number = payload.get("order_number", "")
+    org_id = payload.get("org_id")
+    category = payload.get("category") or None
+    rate_card = payload.get("rate_card") or None  # §21 snapshot from the quote
 
-    supplier_ngn = cny_total * fx
-    logistics_ngn = (weight * qty) * LOGISTICS_NGN_PER_KG
-    payment_ngn = (supplier_ngn + logistics_ngn) * PAYMENT_COST_PCT
+    profile = resolve_profile(
+        db, org_id=org_id, origin="CN", dest="NG", category=category,
+    )
+    wf = compute_waterfall(
+        supplier_ngn=cny_total * fx, weight_kg=weight, qty=qty,
+        profile=profile, rate_card=rate_card,
+    )
+    supplier_ngn = wf["supplier_ngn"]
+    logistics_ngn = wf["logistics_ngn"]
+    payment_ngn = wf["payment_ngn"]
     luxeen_ngn = round(amount - supplier_ngn - logistics_ngn - payment_ngn, 2)
 
     def _add(entry_type: str, party: str, amt: float, memo: str) -> None:
@@ -42,10 +52,14 @@ def _on_sourcing_paid(db: Session, payload: dict) -> None:
             currency="NGN", memo=memo[:1024],
         ))
 
+    basis = wf["economics_basis"]
     _add("sourcing_payment", "operator", amount, f"{order_number} marketstore sourcing payment")
     _add("supplier_payable", "supplier", -supplier_ngn,
          f"{order_number} supplier amount ¥{cny_total:,.2f} @ {fx:g} CNY→NGN (§46 snapshot)")
-    _add("logistics_cost", "logistics", -logistics_ngn, f"{order_number} corridor logistics")
+    _add("logistics_cost", "logistics", -logistics_ngn,
+         f"{order_number} corridor logistics (freight {wf['freight_ngn']:,.0f}"
+         f" + customs {wf['customs_ngn']:,.0f}) · economics: {basis['profile_name']}"
+         f" / {basis.get('rate_card', 'profile per-kg')}")
     _add("payment_cost", "payment_processor", -payment_ngn, f"{order_number} payment fees")
     _add("luxeen_economics", "luxeen", luxeen_ngn, f"{order_number} network economics")
     events.publish(db, "finance.sourcing_settlement_ready", {

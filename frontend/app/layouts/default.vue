@@ -54,6 +54,7 @@ onMounted(async () => {
           <span v-if="mounted && unread" class="unread-badge">{{ unread > 99 ? '99+' : unread }}</span>
         </NuxtLink>
         <NuxtLink v-if="mounted && auth.user.value?.role === 'luxeen_admin'" to="/suppliers">Supplier Network</NuxtLink>
+        <NuxtLink to="/audit">Audit Trail</NuxtLink>
         <NuxtLink to="/events">Event Stream</NuxtLink>
       </nav>
       <div class="sidebar-foot">

@@ -16,12 +16,15 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
+from app.catalog import models as cm
 from app.core import events
+from app.core.pricing import FX_RATES
 from app.finance import models as fm
+from app.finance.economics import compute_waterfall, resolve_profile
 from app.orders import models as om
 from app.payments import models as pm
 from app.payments import service as payment_service
-from app.core.pricing import FX_RATES, LOGISTICS_NGN_PER_KG, PAYMENT_COST_PCT, LUXEEN_MARGIN_PCT
+from app.storefront import models as stm
 
 
 def _on_order_status_changed(db: Session, payload: dict) -> None:
@@ -50,13 +53,29 @@ def _on_payment_received(db: Session, payload: dict) -> None:
     if not items:
         return
 
+    # §57: the waterfall's rates are DATA — resolve the most specific
+    # active profile for this operator/category instead of constants.
+    store = db.get(stm.Store, order.store_id)
+    first_product = db.get(cm.Product, items[0].product_id) if items else None
+    profile = resolve_profile(
+        db,
+        org_id=store.org_id if store else None,
+        origin="CN", dest="NG",
+        category=first_product.category if first_product else None,
+    )
+
     # Waterfall per unit economics captured at order time (§27)
     supplier_cny = sum(i.supplier_cost_cny * i.qty for i in items)
     fx = FX_RATES["CNY"]["NGN"]
     supplier_ngn = supplier_cny * fx
-    logistics_ngn = sum(i.weight_kg * i.qty for i in items) * LOGISTICS_NGN_PER_KG
-    payment_ngn = (supplier_ngn + logistics_ngn) * PAYMENT_COST_PCT
-    luxeen_ngn = supplier_ngn * LUXEEN_MARGIN_PCT
+    weight_kg = sum(i.weight_kg * i.qty for i in items)
+    wf = compute_waterfall(
+        supplier_ngn=supplier_ngn, weight_kg=weight_kg, qty=1,
+        profile=profile,
+    )
+    logistics_ngn = wf["logistics_ngn"]
+    payment_ngn = wf["payment_ngn"]
+    luxeen_ngn = wf["luxeen_ngn"]
     operator_ngn = amount - supplier_ngn - logistics_ngn - payment_ngn - luxeen_ngn
 
     def _add(entry_type: str, party: str, amt: float, memo: str) -> None:
@@ -65,9 +84,15 @@ def _on_payment_received(db: Session, payload: dict) -> None:
             amount=round(amt, 2), currency="NGN", memo=memo,
         ))
 
+    basis = wf["economics_basis"]
+    basis_memo = f"economics: {basis['profile_name']}" + (
+        f" / {basis['rate_card']}" if basis.get("rate_card") else ""
+    )
     _add("customer_payment", "customer", amount, f"Order {order_id} payment ({payload.get('method', 'cod')})")
     _add("supplier_payable", "supplier", -supplier_ngn, f"Order {order_id} supplier amount")
-    _add("logistics_cost", "logistics", -logistics_ngn, f"Order {order_id} logistics")
+    _add("logistics_cost", "logistics", -logistics_ngn,
+         f"Order {order_id} logistics (freight {wf['freight_ngn']:,.0f}"
+         f" + customs {wf['customs_ngn']:,.0f}) · {basis_memo}")
     _add("payment_cost", "payment_processor", -payment_ngn, f"Order {order_id} payment fees")
     _add("luxeen_economics", "luxeen", -luxeen_ngn, f"Order {order_id} network economics")
     _add("operator_economics", "operator", -operator_ngn, f"Order {order_id} operator economics")

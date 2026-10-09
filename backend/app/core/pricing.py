@@ -55,18 +55,48 @@ def price_product(
     weight_kg: float | None = None,
     markup_pct: float | None = None,
     target_currency: str = "NGN",
+    *,
+    rates: dict | None = None,
+    freight: dict | None = None,
 ) -> PriceBreakdown:
-    """Compute the operator-facing Ecos price plus the full cost waterfall."""
+    """Compute the operator-facing Ecos price plus the full cost waterfall.
+
+    `rates`   — optional overrides {payment_cost_pct, luxeen_margin_pct,
+                logistics_per_kg_ngn, tax_pct} resolved from a §57
+                WaterfallProfile; static constants stay the fallback.
+    `freight` — optional §21 rate card {base_fixed_ngn, per_kg_ngn,
+                fuel_surcharge_pct, customs_pct, min_charge_ngn}; replaces the
+                flat per-kg when the lane has a real freight option.
+    """
     if currency == target_currency:
         rate = 1.0
     else:
         rate = FX_RATES[currency][target_currency]
 
+    rates = rates or {}
+    payment_pct = rates.get("payment_cost_pct", PAYMENT_COST_PCT)
+    luxeen_pct = rates.get("luxeen_margin_pct", LUXEEN_MARGIN_PCT)
+
     cost = supplier_cost * rate
-    logistics = (weight_kg if weight_kg is not None else DEFAULT_WEIGHT_KG) * LOGISTICS_NGN_PER_KG
-    payment = (cost + logistics) * PAYMENT_COST_PCT
-    luxeen = cost * LUXEEN_MARGIN_PCT
-    markup = markup_pct if markup_pct is not None else DEFAULT_MARKUP_PCT
+    weight_total = (weight_kg if weight_kg is not None else DEFAULT_WEIGHT_KG)
+    if freight:
+        logistics = (
+            float(freight.get("base_fixed_ngn") or 0.0)
+            + float(freight.get("per_kg_ngn") or 0.0)
+            * (1 + float(freight.get("fuel_surcharge_pct") or 0.0))
+            * weight_total
+        )
+        if freight.get("min_charge_ngn"):
+            logistics = max(logistics, float(freight["min_charge_ngn"]))
+        logistics += cost * float(freight.get("customs_pct") or 0.0)
+    else:
+        logistics = weight_total * rates.get("logistics_per_kg_ngn", LOGISTICS_NGN_PER_KG)
+        logistics += cost * float(rates.get("tax_pct") or 0.0)
+    payment = (cost + logistics) * payment_pct
+    luxeen = cost * luxeen_pct
+    markup = markup_pct if markup_pct is not None else rates.get("operator_markup_pct")
+    if markup is None:
+        markup = DEFAULT_MARKUP_PCT
     operator_margin = cost * markup
 
     base = cost + logistics + payment + luxeen

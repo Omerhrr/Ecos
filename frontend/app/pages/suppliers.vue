@@ -7,10 +7,12 @@
 definePageMeta({ layout: 'default' })
 const api = useApi()
 const auth = useAuth()
+const { date } = useFormat()
 
-const tab = ref<'review' | 'listings' | 'recruit'>('review')
+const tab = ref<'review' | 'listings' | 'recruit' | 'performance'>('review')
 const submitted = ref<SupplierProduct[]>([])
 const published = ref<SupplierProduct[]>([])
+const perf = ref<SupplierPerf[]>([])
 const busy = ref(0)
 const flash = ref('')
 const error = ref('')
@@ -28,6 +30,7 @@ async function load() {
   try {
     submitted.value = await api.adminMarketProducts('submitted')
     published.value = await api.adminMarketProducts('published')
+    perf.value = (await api.supplierPerformance()).suppliers
   }
   catch { error.value = 'Could not load the review queue.' }
 }
@@ -87,6 +90,7 @@ const tone = (s: string) =>
           Review queue <span class="badge" :class="submitted.length ? 'amber' : 'gray'">{{ submitted.length }}</span>
         </button>
         <button :class="tab === 'listings' ? '' : 'ghost'" @click="tab = 'listings'">Live listings</button>
+        <button :class="tab === 'performance' ? '' : 'ghost'" @click="tab = 'performance'">Performance (§8)</button>
         <button :class="tab === 'recruit' ? '' : 'ghost'" @click="tab = 'recruit'">Recruit supplier</button>
       </div>
     </div>
@@ -145,6 +149,40 @@ const tone = (s: string) =>
           </tbody>
         </table>
       </div>
+    </template>
+
+    <!-- PERFORMANCE -->
+    <template v-if="tab === 'performance'">
+      <div class="card" style="padding:0">
+        <table>
+          <thead>
+            <tr><th>Supplier</th><th>Listings</th><th>Orders</th><th>Accept rate</th><th>Avg accept</th><th>Avg transit</th><th>Arrival rate</th><th>Cancel rate</th><th>Units received</th><th>Last activity</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="s in perf" :key="s.supplier_id">
+              <td><b>{{ s.name }}</b> <span class="muted" style="font-size:.72rem">{{ s.city }}, {{ s.country }}</span></td>
+              <td>{{ s.listings.total }} <span class="muted" style="font-size:.72rem">({{ s.listings.published }} live)</span></td>
+              <td>{{ s.sourcing.orders_total }}</td>
+              <td>
+                <span v-if="s.sourcing.accept_rate != null" class="badge" :class="s.sourcing.accept_rate >= 0.8 ? 'green' : s.sourcing.accept_rate >= 0.5 ? 'amber' : 'red'">
+                  {{ (s.sourcing.accept_rate * 100).toFixed(0) }}%
+                </span>
+                <span v-else class="muted">—</span>
+              </td>
+              <td>{{ s.sourcing.avg_accept_hours != null ? s.sourcing.avg_accept_hours + 'h' : '—' }}</td>
+              <td>{{ s.sourcing.avg_transit_days != null ? s.sourcing.avg_transit_days + 'd' : '—' }}</td>
+              <td>{{ s.sourcing.arrival_rate != null ? (s.sourcing.arrival_rate * 100).toFixed(0) + '%' : '—' }}</td>
+              <td>{{ s.sourcing.cancel_rate != null ? (s.sourcing.cancel_rate * 100).toFixed(0) + '%' : '—' }}</td>
+              <td>{{ s.sourcing.units_received }}</td>
+              <td class="muted" style="font-size:.72rem">{{ s.last_activity ? date(s.last_activity) : '—' }}</td>
+            </tr>
+            <tr v-if="!perf.length"><td colspan="10" class="empty">No suppliers yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted" style="font-size:.76rem;margin-top:.5rem">
+        Derived from live corridor data (§8): accept = supplier took the paid order on; transit = paid → CN exit arrival in Nigeria; everything recalculates as sourcing orders progress.
+      </p>
     </template>
 
     <!-- RECRUIT -->

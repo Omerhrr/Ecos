@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.audit import service as audit_service
 from app.core.database import get_db
-from app.core.deps import require_perm
+from app.core.deps import AuthContext, require_perm
 from app.orders import models as om
 from app.payments import models as m
 from app.payments import service
@@ -47,15 +48,25 @@ def get_payment(payment_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{payment_id}/capture", dependencies=[Depends(require_perm("payments:write"))])
-def capture(payment_id: int, payload: CaptureIn, db: Session = Depends(get_db)):
+def capture(payment_id: int, payload: CaptureIn, request: Request,
+            db: Session = Depends(get_db),
+            ctx: AuthContext = Depends(require_perm("payments:write"))):
     """Capture a payment (gateway callback simulation, or manual COD collection)."""
     p = db.get(m.Payment, payment_id)
     if not p:
         raise HTTPException(404, "Payment not found")
+    before = serialize(p)
     try:
         service.capture_payment(db, p, reference=payload.reference)
         service.sync_order_payment_status(db, p.order_id)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    audit_service.record(
+        db, ctx=ctx, request=request,
+        action="payment.captured", entity_type="payment", entity_id=p.id,
+        before=before, after=serialize(p),
+        changed_only=["status", "reference", "collected_at"],
+        auth_context="payments:write",
+    )
     db.commit()
     return serialize(p)
