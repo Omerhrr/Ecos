@@ -1095,6 +1095,8 @@ export interface SourcingOrder {
   local_currency: string
   local_total: number
   status: string
+  fulfillment_mode: 'stock' | 'dropship'
+  customer_order_id: number | null
   payment_method: string
   payment_reference: string
   paid_at: string | null
@@ -1133,6 +1135,7 @@ export interface SourcingSupplierView {
   unit_cost_cny: number
   cny_total: number
   status: string
+  fulfillment_mode: 'stock' | 'dropship'
   destination: { name: string; phone: string; address: string; city: string; country: string }
   note: string
   events?: SourcingEvent[]
@@ -1603,8 +1606,12 @@ export function useApi() {
       req<MarketListing[]>('/api/market/products', { params }),
     marketProduct: (id: number) => req<MarketListing>(`/api/market/products/${id}`),
     sourcingOrders: () => req<SourcingOrder[]>('/api/market/sourcing-orders'),
-    createSourcingOrder: (body: { supplier_product_id: number; qty: number; agent_org_id?: number | null; note?: string; dest_name?: string; dest_phone?: string; dest_address?: string; dest_city?: string }) =>
+    createSourcingOrder: (body: { supplier_product_id: number; qty: number; agent_org_id?: number | null; fulfillment_mode?: 'stock' | 'dropship'; note?: string; dest_name?: string; dest_phone?: string; dest_address?: string; dest_city?: string; dest_country?: string }) =>
       req<SourcingOrder>('/api/market/sourcing-orders', { method: 'POST', body }),
+    // §20 dropship: relay a confirmed storefront order to its supplier —
+    // the supplier ships direct to the customer, skipping the AGM
+    relayOrderToSupplier: (orderId: number) =>
+      req<{ relayed: SourcingOrder[]; message: string }>(`/api/market/orders/${orderId}/relay-supplier`, { method: 'POST', body: {} }),
     paySourcingOrder: (id: number, method = 'online_transfer') =>
       req<SourcingOrder>(`/api/market/sourcing-orders/${id}/pay`, { method: 'POST', body: { method } }),
     cancelSourcingOrder: (id: number) =>

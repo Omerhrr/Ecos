@@ -28,7 +28,7 @@ const trackOpen = ref(0)
 const track = reactive({ code: 'picked_up', location: '', description: '' })
 const TRACK_CODES = [
   'supplier_processing', 'picked_up', 'origin_warehouse', 'exported',
-  'in_transit', 'customs', 'destination_hub', 'delivered',
+  'in_transit', 'customs', 'destination_hub', 'out_for_delivery', 'delivered',
 ]
 
 onMounted(async () => {
@@ -113,7 +113,7 @@ async function postTracking(o: SourcingSupplierView) {
 const tone = (s: string) =>
   ({ draft: 'gray', submitted: 'amber', approved: 'blue', rejected: 'red', published: 'green', archived: 'gray' }[s] ?? 'gray')
 const soTone = (s: string) =>
-  ({ paid: 'blue', processing: 'amber', shipped: 'blue', in_transit: 'blue', customs: 'amber', destination_hub: 'blue', arrived: 'teal', received: 'green', cancelled: 'red', pending_payment: 'gray' }[s] ?? 'gray')
+  ({ paid: 'blue', processing: 'amber', shipped: 'blue', in_transit: 'blue', customs: 'amber', destination_hub: 'blue', arrived: 'teal', received: 'green', out_for_delivery: 'blue', delivered: 'green', cancelled: 'red', pending_payment: 'gray' }[s] ?? 'gray')
 const fmt = (n: number) => '¥' + Number(n || 0).toLocaleString()
 </script>
 
@@ -169,6 +169,7 @@ const fmt = (n: number) => '¥' + Number(n || 0).toLocaleString()
         <div style="display:flex;justify-content:space-between;gap:.8rem;flex-wrap:wrap;align-items:center">
           <div>
             <b>{{ o.order_number }}</b> · {{ o.qty }} × {{ o.title }}
+            <span v-if="o.fulfillment_mode === 'dropship'" class="badge violet" style="margin-left:.3rem">dropship — ship direct to recipient</span>
             <span class="badge" :class="soTone(o.status)" style="margin-left:.4rem">{{ o.status.replace('_',' ') }}</span>
             <div class="muted" style="font-size:.8rem;margin-top:.2rem">
               {{ fmt(o.cny_total) }} total · ship to {{ o.destination.name }}, {{ o.destination.city }}, {{ o.destination.country }}

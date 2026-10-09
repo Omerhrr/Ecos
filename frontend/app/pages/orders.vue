@@ -15,6 +15,9 @@ const markFor = ref<Order | null>(null)
 const markAgent = ref<number | null>(null)
 const markBusy = ref(false)
 const markError = ref('')
+const relayFor = ref<Order | null>(null)
+const relayBusy = ref(false)
+const relayError = ref('')
 
 const form = reactive({
   store_id: 1, customer_id: 0, product_id: 0, qty: 1,
@@ -82,6 +85,23 @@ async function confirmMark() {
   }
   finally { markBusy.value = false }
 }
+
+// §20 dropship: the supplier ships this order direct to the customer —
+// no agent, no putaway. Creates a prepaid corridor leg on /sourcing.
+async function confirmRelay() {
+  if (!relayFor.value) return
+  relayBusy.value = true
+  relayError.value = ''
+  try {
+    await api.relayOrderToSupplier(relayFor.value.id)
+    relayFor.value = null
+    navigateTo('/sourcing')
+  }
+  catch (e: unknown) {
+    relayError.value = (e as { response?: { _data?: { detail?: string } } })?.response?._data?.detail ?? 'Could not relay the order.'
+  }
+  finally { relayBusy.value = false }
+}
 </script>
 
 <template>
@@ -118,11 +138,32 @@ async function confirmMark() {
             <td class="muted" style="font-size:.76rem">{{ date(o.created_at) }}</td>
             <td>
               <button v-if="o.status === 'confirmed'" class="ghost small" @click="openMark(o)">Fulfill via agent</button>
+              <button v-if="o.status === 'confirmed'" class="ghost small" @click="relayFor = o; relayError = ''">Fulfill via supplier</button>
             </td>
           </tr>
           <tr v-if="!orders.length"><td colspan="9" class="empty">No orders</td></tr>
         </tbody>
       </table>
+    </div>
+
+    <!-- §20 dropship: relay the order to its supplier -->
+    <div v-if="relayFor" class="modal-backdrop" @click.self="relayFor = null">
+      <div class="modal">
+        <h2>Fulfill via supplier (dropship)</h2>
+        <p class="muted" style="margin-top:-.3rem">Order #{{ relayFor.id }} — {{ relayFor.customer_name }}. The supplier ships each line DIRECT to the customer, skipping the AGM. You pay the prepaid corridor leg, then track it on Sourcing (§23 ladder ends at the customer's door).</p>
+        <div class="card" style="background:#f8fafc;padding:.7rem .8rem;margin-bottom:.6rem">
+          <div class="muted" style="font-size:.78rem">
+            · The supplier sees the recipient's address — never you, your storefront, or your prices (§9).<br>
+            · Nothing lands in stock — the parcel goes straight out.<br>
+            · COD orders: you still collect the cash yourself — dropship legs never carry your retail money.
+          </div>
+        </div>
+        <div v-if="relayError" class="badge red" style="display:block;padding:.5rem">{{ relayError }}</div>
+        <div class="row" style="justify-content:flex-end">
+          <button class="ghost" @click="relayFor = null">Cancel</button>
+          <button :disabled="relayBusy" @click="confirmRelay">{{ relayBusy ? 'Relaying…' : 'Relay to supplier' }}</button>
+        </div>
+      </div>
     </div>
 
     <!-- §20-24: mark for agent fulfillment -->

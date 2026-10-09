@@ -70,6 +70,57 @@ SOURCING_CODE_MAP = {
     "delivered": "arrived",
 }
 
+# ---------------------------------------------------------------------------
+# DROPSHIP MODE — the supplier ships the parcel DIRECT to the recipient on
+# the box (the operator's customer), skipping the AGM entirely: no putaway,
+# no per-vendor stock, no agent last mile. The ladder therefore ends at the
+# recipient's door (`delivered`) instead of an arrival into inventory.
+# ---------------------------------------------------------------------------
+
+DROPSHIP_STATUSES = [
+    "pending_payment", "paid", "processing", "shipped", "in_transit",
+    "customs", "destination_hub", "out_for_delivery", "delivered", "cancelled",
+]
+
+DROPSHIP_TRANSITIONS: dict[str, list[str]] = {
+    "pending_payment": ["paid", "cancelled"],
+    "paid": ["processing", "cancelled"],
+    "processing": ["shipped", "cancelled"],
+    "shipped": ["in_transit"],
+    "in_transit": ["customs", "destination_hub"],
+    "customs": ["in_transit", "destination_hub"],
+    "destination_hub": ["out_for_delivery"],
+    "out_for_delivery": ["delivered"],
+    "delivered": [],
+    "cancelled": [],
+}
+
+DROPSHIP_CODE_MAP = {
+    "supplier_processing": "processing",
+    "picked_up": "shipped",
+    "origin_warehouse": "in_transit",
+    "exported": "in_transit",
+    "in_transit": "in_transit",
+    "customs": "customs",
+    "destination_hub": "destination_hub",
+    "out_for_delivery": "out_for_delivery",
+    "delivered": "delivered",
+}
+
+FULFILLMENT_MODES = ["stock", "dropship"]
+
+
+def code_map_for(mode: str) -> dict[str, str]:
+    return DROPSHIP_CODE_MAP if mode == "dropship" else SOURCING_CODE_MAP
+
+
+def transitions_for(mode: str) -> dict[str, list[str]]:
+    return DROPSHIP_TRANSITIONS if mode == "dropship" else SOURCING_TRANSITIONS
+
+
+def statuses_for(mode: str) -> list[str]:
+    return DROPSHIP_STATUSES if mode == "dropship" else SOURCING_STATUSES
+
 
 class SupplierProduct(Base):
     """A product a supplier uploads to Ecos (plan §8, §10).
@@ -143,6 +194,13 @@ class SourcingOrder(Base):
     # ledger waterfall always matches what the operator saw at purchase time
     rate_card_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="pending_payment", index=True)
+    # stock (default): units land at an agent/operator warehouse and become
+    # sellable inventory. dropship: the supplier ships the parcel straight to
+    # the recipient below — no AGM leg, no putaway, ladder ends `delivered`.
+    fulfillment_mode: Mapped[str] = mapped_column(String(20), default="stock", index=True)
+    # when this sourcing order relays a storefront customer order (dropship
+    # fulfillment), the link keeps §51 one-product-one-environment traceable
+    customer_order_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     payment_method: Mapped[str] = mapped_column(String(30), default="wallet")
     payment_reference: Mapped[str] = mapped_column(String(100), default="")
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -243,18 +243,31 @@ def create_sourcing_order(
     qty: int,
     created_by: int | None = None,
     agent_org_id: int | None = None,
+    fulfillment_mode: str = "stock",
+    customer_order_id: int | None = None,
     dest_name: str = "",
     dest_phone: str = "",
     dest_address: str = "",
     dest_city: str = "",
     dest_country: str = "NG",
     note: str = "",
+    skip_moq: bool = False,
 ) -> m.SourcingOrder:
     sp = db.get(m.SupplierProduct, supplier_product_id)
     if sp is None or sp.status != "published":
         raise ValueError("This product is not available on the Marketstore")
-    if qty < sp.moq:
+    if fulfillment_mode not in m.FULFILLMENT_MODES:
+        raise ValueError(f"Unknown fulfillment mode: {fulfillment_mode}")
+    if not skip_moq and qty < sp.moq:
         raise ValueError(f"Minimum order quantity is {sp.moq}")
+
+    if fulfillment_mode == "dropship":
+        # the parcel goes straight to the recipient — an agent makes no sense
+        # here (that is the AGM's job) and a blank address cannot be shipped
+        if agent_org_id:
+            raise ValueError("Dropship orders ship direct to the recipient — no agent destination")
+        if not (dest_name and dest_phone and dest_address):
+            raise ValueError("Dropship needs a full recipient: name, phone and address")
 
     quote = supply_quote(db, sp, qty=qty, org_id=org_id)
     card_snapshot = rates_service.resolve_rate(db, origin="CN", dest="NG", org_id=org_id)
@@ -277,6 +290,8 @@ def create_sourcing_order(
         local_total=quote["total_supply_price_ngn"],
         weight_kg=float(sp.weight_kg),
         rate_card_snapshot=card_snapshot,
+        fulfillment_mode=fulfillment_mode,
+        customer_order_id=customer_order_id,
         agent_org_id=agent_org_id,
         dest_name=dest_name[:255], dest_phone=dest_phone[:50],
         dest_address=dest_address[:1024], dest_city=dest_city[:100],
@@ -287,13 +302,19 @@ def create_sourcing_order(
     db.flush()
     db.add(m.SourcingEvent(
         sourcing_order_id=so.id, code="supplier_processing",
-        description="Order placed on the Ecos Marketstore — awaiting supplier confirmation.",
+        description=(
+            "Dropship order placed — the supplier will ship directly to the recipient."
+            if fulfillment_mode == "dropship"
+            else "Order placed on the Ecos Marketstore — awaiting supplier confirmation."
+        ),
         location="Ecos Network",
     ))
     events.publish(db, "sourcing.created", {
         "sourcing_order_id": so.id, "order_number": so.order_number,
         "org_id": org_id, "supplier_id": so.supplier_id,
         "qty": qty, "local_total": so.local_total,
+        "fulfillment_mode": so.fulfillment_mode,
+        "customer_order_id": so.customer_order_id,
     })
     return so
 
@@ -333,8 +354,10 @@ def pay_sourcing_order(
 def cancel_sourcing_order(db: Session, so: m.SourcingOrder) -> m.SourcingOrder:
     if so.status in ("arrived", "received"):
         raise ValueError("Goods already arrived — use returns instead")
-    if so.status == "cancelled":
-        return so
+    if so.fulfillment_mode == "dropship" and so.status in ("out_for_delivery", "delivered"):
+        raise ValueError("Parcel is already on the last mile — use returns instead")
+    if so.status in ("cancelled", "delivered"):
+        raise ValueError(f"Sourcing order {so.order_number} is already {so.status}")
     so.status = "cancelled"
     so.cancelled_at = _now()
     events.publish(db, "sourcing.cancelled", {
@@ -348,8 +371,14 @@ def add_sourcing_event(
     db: Session, so: m.SourcingOrder, *, code: str,
     description: str = "", location: str = "",
 ) -> m.SourcingEvent:
-    """Supplier-side checkpoint update on the §23 ladder."""
-    if code not in m.SOURCING_CODE_MAP:
+    """Supplier-side checkpoint update on the §23 ladder (mode-aware).
+
+    Stock orders climb toward `arrived` (putaway next); dropship orders run
+    the direct-to-recipient ladder and end at `delivered` on the doorstep.
+    """
+    code_map = m.code_map_for(so.fulfillment_mode)
+    transitions = m.transitions_for(so.fulfillment_mode)
+    if code not in code_map:
         raise ValueError(f"Unknown tracking code: {code}")
     if so.status in ("pending_payment", "cancelled"):
         raise ValueError("Order is not active for tracking updates")
@@ -358,16 +387,25 @@ def add_sourcing_event(
         description=description[:1024], location=location[:255],
     )
     db.add(event)
-    target = m.SOURCING_CODE_MAP[code]
-    if target in m.SOURCING_TRANSITIONS.get(so.status, []) :
+    target = code_map[code]
+    if target in transitions.get(so.status, []) :
         so.status = target
     db.flush()
     events.publish(db, "sourcing.status_changed", {
         "sourcing_order_id": so.id, "order_number": so.order_number,
         "org_id": so.org_id, "supplier_id": so.supplier_id,
         "code": code, "status": so.status,
+        "fulfillment_mode": so.fulfillment_mode,
+        "customer_order_id": so.customer_order_id,
         "location": location, "description": description,
     })
+    if so.fulfillment_mode == "dropship" and so.status == "delivered":
+        events.publish(db, "sourcing.delivered", {
+            "sourcing_order_id": so.id, "order_number": so.order_number,
+            "org_id": so.org_id, "supplier_id": so.supplier_id,
+            "qty": so.qty, "title": so.title,
+            "customer_order_id": so.customer_order_id,
+        })
     return event
 
 
@@ -380,7 +418,11 @@ def receive_sourcing_order(
     - With an agent destination: AGM per-vendor putaway (agent holds the
       vendor's stock) AND product.stock rises so the storefront pool grows.
     - Without an agent: straight into the operator's default warehouse (§22).
+    - Dropship orders NEVER receive — the parcel already reached the
+      recipient's door; there is no inventory to putaway (raise instead).
     """
+    if so.fulfillment_mode == "dropship":
+        raise ValueError("Dropship orders deliver directly to the recipient — there is nothing to receive")
     if so.status != "arrived":
         raise ValueError(f"Sourcing order {so.order_number} is {so.status}; must be arrived to receive")
 
@@ -418,6 +460,86 @@ def receive_sourcing_order(
         "qty": so.qty, "mode": result["mode"], "product_id": product.id,
     })
     return result
+
+
+# ---------------------------------------------------------------------------
+# Dropship relay — a storefront order fulfilled by the supplier (§9, §20)
+# ---------------------------------------------------------------------------
+
+def relay_order_to_supplier(
+    db: Session, *, order, org_id: int, created_by: int | None = None,
+) -> list[m.SourcingOrder]:
+    """Relay a confirmed storefront order to its supplier for DROPSHIP
+    fulfillment: the supplier ships each line direct to the customer.
+
+    Skips the AGM entirely — no agent alert, no per-vendor stock, no last-mile
+    call center. Each order line becomes one prepaid dropship sourcing order
+    (MOQ waived: this is fulfillment of a committed sale, not a stock buy).
+    The sourcing orders start `pending_payment` — the operator pays the
+    corridor leg to put the supplier to work.
+
+    Isolation (§9): the supplier payload carries the recipient's contact
+    (they must address the parcel) but never the storefront, the customer
+    order, or its retail economics.
+    """
+    from app.crm import models as crm_m
+    from app.orders import models as om
+
+    if order.status not in ("confirmed", "processing"):
+        raise ValueError(f"Order #{order.id} is {order.status}; confirm it before relaying to the supplier")
+    existing = (
+        db.query(m.SourcingOrder)
+        .filter(
+            m.SourcingOrder.customer_order_id == order.id,
+            m.SourcingOrder.fulfillment_mode == "dropship",
+            m.SourcingOrder.status.notin_(["cancelled"]),
+        )
+        .first()
+    )
+    if existing:
+        raise ValueError(f"Order #{order.id} is already relaying to the supplier ({existing.order_number})")
+
+    customer = db.get(crm_m.Customer, order.customer_id)
+    dest_name = (customer.full_name if customer else "") or "Ecos recipient"
+    dest_phone = (customer.phone if customer else "") or ""
+    dest_address = (customer.address if customer else "") or ""
+    dest_city = (customer.city if customer else "") or ""
+    if not (dest_phone and dest_address):
+        raise ValueError("The customer has no phone/address on file — add them before a supplier dropship")
+
+    items = db.query(om.OrderItem).filter(om.OrderItem.order_id == order.id).all()
+    if not items:
+        raise ValueError("Order has no lines to relay")
+
+    created: list[m.SourcingOrder] = []
+    problems: list[str] = []
+    for item in items:
+        sp = (
+            db.query(m.SupplierProduct)
+            .filter(
+                m.SupplierProduct.catalog_product_id == item.product_id,
+                m.SupplierProduct.status == "published",
+            )
+            .first()
+        )
+        if sp is None:
+            problems.append(item.title or f"product {item.product_id}")
+            continue
+        created.append(create_sourcing_order(
+            db, supplier_product_id=sp.id, org_id=org_id, qty=item.qty,
+            created_by=created_by, fulfillment_mode="dropship",
+            customer_order_id=order.id,
+            dest_name=dest_name, dest_phone=dest_phone,
+            dest_address=dest_address, dest_city=dest_city,
+            note=f"Direct delivery for recipient in {dest_city or 'destination market'}",
+            skip_moq=True,
+        ))
+    if problems:
+        raise ValueError(
+            "Not available for supplier dropship: " + ", ".join(problems) +
+            " — no published network listing backs them"
+        )
+    return created
 
 
 # ---------------------------------------------------------------------------
@@ -465,6 +587,8 @@ def serialize_sourcing_operator(db: Session, so: m.SourcingOrder, *, with_events
         "local_currency": so.local_currency,
         "local_total": so.local_total,
         "status": so.status,
+        "fulfillment_mode": so.fulfillment_mode,
+        "customer_order_id": so.customer_order_id,
         "payment_method": so.payment_method,
         "payment_reference": so.payment_reference,
         "paid_at": so.paid_at.isoformat() if so.paid_at else None,
@@ -478,7 +602,7 @@ def serialize_sourcing_operator(db: Session, so: m.SourcingOrder, *, with_events
         "received_at": so.received_at.isoformat() if so.received_at else None,
         "catalog_product_id": so.catalog_product_id,
         "created_at": so.created_at.isoformat() if so.created_at else None,
-        "allowed_transitions": m.SOURCING_TRANSITIONS.get(so.status, []),
+        "allowed_transitions": m.transitions_for(so.fulfillment_mode).get(so.status, []),
     }
     if with_events:
         rows = (
@@ -508,6 +632,7 @@ def serialize_sourcing_supplier(db: Session, so: m.SourcingOrder, *, with_events
         "unit_cost_cny": so.unit_cost_cny,
         "cny_total": so.cny_total,
         "status": so.status,
+        "fulfillment_mode": so.fulfillment_mode,
         "destination": {
             "name": so.dest_name, "phone": so.dest_phone,
             "address": so.dest_address, "city": so.dest_city,

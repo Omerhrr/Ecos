@@ -123,8 +123,73 @@ def _on_sourcing_received(db: Session, payload: dict) -> None:
         )
 
 
+def _on_sourcing_delivered(db: Session, payload: dict) -> None:
+    """DROPSHIP end of the corridor: the supplier's parcel reached the
+    recipient's door. Tell the operator, and when this sourcing order was
+    relaying a storefront customer order, walk that order down its §19
+    machine to `delivered` (mirrors the AGM hand-off, minus the agent).
+
+    §9 money rule: the supplier's leg is prepaid corridor freight — retail
+    COD never touches the supplier. A COD storefront order stays
+    payment_status=pending for the operator to collect through their own
+    channel (the payments desk captures it when the cash lands).
+    """
+    order_number = payload.get("order_number", "")
+    org_id = payload.get("org_id")
+    title = payload.get("title", "")
+    qty = payload.get("qty", 1)
+    notif_service.notify(
+        db, org_id=org_id, category="market", level="success",
+        title=f"Dropship {order_number} delivered to the recipient",
+        body=(
+            f"{qty} × {title} was handed over at the recipient's door — "
+            "no stock landed; the corridor leg is complete."
+        ),
+        entity_type="sourcing_order", entity_id=payload.get("sourcing_order_id"),
+    )
+
+    order_id = payload.get("customer_order_id")
+    if not order_id:
+        return
+    from app.orders import models as om
+    from app.orders import service as order_service
+
+    order = db.get(om.Order, int(order_id))
+    if order is None or order.status == "delivered":
+        return
+    chain = ["processing", "fulfilled", "in_transit", "out_for_delivery", "delivered"]
+    if order.status == "confirmed":
+        steps = chain
+    elif order.status in chain:
+        steps = chain[chain.index(order.status) + 1:]
+    else:
+        return  # unexpected state — never force a machine backwards
+    for step in steps:
+        try:
+            order_service.transition_order(db, order, step, actor="supplier_dropship")
+        except ValueError:
+            break
+        if order.status == "delivered":
+            break
+    notif_service.notify(
+        db, org_id=org_id, category="orders", level="success",
+        title=f"Order #{order.id} fulfilled by supplier dropship",
+        body=(
+            f"The supplier delivered {qty} × {title} directly to "
+            f"{payload.get('recipient', 'the customer')}. "
+            + (
+                "COD is still pending — collect through your own channel and capture it in Payments."
+                if order.payment_method == "cod"
+                else "Payment was already captured."
+            )
+        ),
+        entity_type="order", entity_id=order.id,
+    )
+
+
 def register() -> None:
     events.subscribe("sourcing.paid", _on_sourcing_paid)
     events.subscribe("sourcing.submitted", _on_sourcing_submitted)
     events.subscribe("sourcing.status_changed", _on_sourcing_status_changed)
     events.subscribe("sourcing.received", _on_sourcing_received)
+    events.subscribe("sourcing.delivered", _on_sourcing_delivered)

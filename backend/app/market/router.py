@@ -24,6 +24,7 @@ from app.core.security import hash_password
 from app.identity import models as im
 from app.market import models as m
 from app.market import service as svc
+from app.orders import models as om
 from app.supply import models as sm
 
 router = APIRouter(prefix="/market", tags=["market"])
@@ -77,6 +78,7 @@ class SourcingOrderIn(BaseModel):
     supplier_product_id: int
     qty: int = Field(ge=1)
     agent_org_id: int | None = None
+    fulfillment_mode: str = "stock"  # stock | dropship
     dest_name: str = ""
     dest_phone: str = ""
     dest_address: str = ""
@@ -156,6 +158,7 @@ def create_sourcing_order(
         so = svc.create_sourcing_order(
             db, supplier_product_id=payload.supplier_product_id, org_id=ctx.user.org_id,
             qty=payload.qty, created_by=ctx.user.id, agent_org_id=payload.agent_org_id,
+            fulfillment_mode=payload.fulfillment_mode,
             dest_name=payload.dest_name, dest_phone=payload.dest_phone,
             dest_address=payload.dest_address, dest_city=payload.dest_city,
             dest_country=payload.dest_country, note=payload.note,
@@ -164,6 +167,39 @@ def create_sourcing_order(
         raise HTTPException(400, str(e))
     db.commit()
     return svc.serialize_sourcing_operator(db, so, with_events=True)
+
+
+@router.post("/orders/{order_id}/relay-supplier", status_code=201)
+def relay_order_to_supplier(
+    order_id: int,
+    db: Session = Depends(get_db),
+    ctx: AuthContext = Depends(require_perm("market:buy")),
+):
+    """DROPSHIP: hand a confirmed storefront order to its supplier — the
+    supplier ships each line DIRECT to the customer, skipping the AGM.
+    Creates pending-payment sourcing orders; pay them to alert the supplier."""
+    from app.storefront import models as stm
+
+    order = db.get(om.Order, order_id)
+    if order is None:
+        raise HTTPException(404, "Order not found")
+    store = db.get(stm.Store, order.store_id)
+    if store is None or store.org_id != ctx.user.org_id:
+        raise HTTPException(404, "Order not found")
+    try:
+        created = svc.relay_order_to_supplier(db, order=order, org_id=ctx.user.org_id, created_by=ctx.user.id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    db.commit()
+    return {
+        "relayed": [
+            svc.serialize_sourcing_operator(db, so, with_events=True) for so in created
+        ],
+        "message": (
+            f"Relayed as {', '.join(so.order_number for so in created)} — "
+            "pay the corridor leg on Sourcing to put the supplier to work."
+        ),
+    }
 
 
 @router.get("/sourcing-orders")
@@ -218,6 +254,8 @@ def receive_sourcing_order(
     so = _own_sourcing(db, so_id, ctx)
     if so.agent_org_id:
         raise HTTPException(400, "This order is routed via an agent — the agent receives it in the AGM")
+    if so.fulfillment_mode == "dropship":
+        raise HTTPException(400, "Dropship orders deliver directly to the recipient — there is nothing to receive")
     try:
         result = svc.receive_sourcing_order(db, so, received_by=ctx.user.id, warehouse_id=warehouse_id)
     except ValueError as e:

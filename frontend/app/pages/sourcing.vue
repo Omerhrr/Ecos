@@ -55,7 +55,7 @@ async function cancel(o: SourcingOrder) {
 
 const fmt = (n: number) => '₦' + Number(n || 0).toLocaleString()
 const tone = (s: string) =>
-  ({ paid: 'blue', processing: 'amber', shipped: 'blue', in_transit: 'blue', customs: 'amber', destination_hub: 'blue', arrived: 'teal', received: 'green', cancelled: 'red', pending_payment: 'amber' }[s] ?? 'gray')
+  ({ paid: 'blue', processing: 'amber', shipped: 'blue', in_transit: 'blue', customs: 'amber', destination_hub: 'blue', arrived: 'teal', received: 'green', out_for_delivery: 'blue', delivered: 'green', cancelled: 'red', pending_payment: 'amber' }[s] ?? 'gray')
 </script>
 
 <template>
@@ -75,16 +75,21 @@ const tone = (s: string) =>
       <div style="display:flex;justify-content:space-between;gap:.8rem;flex-wrap:wrap;align-items:center">
         <div>
           <b>{{ o.order_number }}</b> · {{ o.qty }} × {{ o.title }}
+          <span v-if="o.fulfillment_mode === 'dropship'" class="badge violet" style="margin-left:.3rem">dropship · direct</span>
           <span class="badge" :class="tone(o.status)" style="margin-left:.4rem">{{ o.status.replace('_',' ') }}</span>
           <div class="muted" style="font-size:.8rem;margin-top:.25rem">
             {{ fmt(o.local_total) }} · corridor cost ¥{{ o.cny_total?.toLocaleString() }} @ {{ o.fx_rate }} ·
-            {{ o.destination.via_agent ? `via agent — ${o.destination.name || 'agent warehouse'}, ${o.destination.city}` : `direct — ${o.destination.city || 'your warehouse'}` }}
+            {{ o.fulfillment_mode === 'dropship'
+              ? `direct to ${o.destination.name || 'recipient'} — ${o.destination.city || o.destination.country}`
+              : o.destination.via_agent ? `via agent — ${o.destination.name || 'agent warehouse'}, ${o.destination.city}` : `direct — ${o.destination.city || 'your warehouse'}` }}
+            <span v-if="o.customer_order_id" class="mono">· relays order #{{ o.customer_order_id }}</span>
           </div>
         </div>
         <div style="display:flex;gap:.45rem;flex-wrap:wrap">
           <button v-if="o.status === 'pending_payment'" class="small" :disabled="busyId === o.id" @click="pay(o)">Pay {{ fmt(o.local_total) }}</button>
           <button v-if="o.status === 'arrived' && !o.destination.via_agent" class="small" :disabled="busyId === o.id" @click="receive(o)">Receive into warehouse</button>
           <span v-if="o.status === 'arrived' && o.destination.via_agent" class="badge teal">Agent receives in AGM</span>
+          <span v-if="o.fulfillment_mode === 'dropship' && o.status === 'delivered'" class="badge green">Handed to the recipient — nothing to receive</span>
           <button v-if="['pending_payment','paid','processing'].includes(o.status)" class="ghost small" :disabled="busyId === o.id" @click="cancel(o)">Cancel</button>
           <button class="ghost small" @click="expanded = expanded === o.id ? null : o.id">
             {{ expanded === o.id ? 'Hide tracking' : 'Tracking' }}
@@ -93,7 +98,9 @@ const tone = (s: string) =>
       </div>
 
       <div v-if="expanded === o.id" style="margin-top:.8rem;border-top:1px solid var(--border);padding-top:.7rem">
-        <div class="muted" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.4rem">Corridor timeline (§23)</div>
+        <div class="muted" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.4rem">
+          {{ o.fulfillment_mode === 'dropship' ? 'Direct delivery timeline (§23 — ends at the recipient)' : 'Corridor timeline (§23)' }}
+        </div>
         <div v-for="(e, i) in o.events || []" :key="e.id" style="display:flex;gap:.7rem;padding:.3rem 0;align-items:baseline">
           <span class="muted" style="font-size:.72rem;min-width:130px">{{ e.occurred_at?.slice(0, 16).replace('T', ' ') }}</span>
           <span class="badge" :class="i === (o.events?.length ?? 0) - 1 ? 'green' : 'gray'" style="min-width:130px;text-align:center">{{ e.code.replace(/_/g,' ') }}</span>

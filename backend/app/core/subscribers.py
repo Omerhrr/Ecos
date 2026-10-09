@@ -30,6 +30,12 @@ from app.storefront import models as stm
 def _on_order_status_changed(db: Session, payload: dict) -> None:
     if payload.get("to") != "delivered":
         return
+    # DROPSHIP (§9): the supplier's courier completed the last mile, but no
+    # cash moved through Ecos — the operator collects COD through their own
+    # channel and captures it in Payments. Auto-capture stays honest for the
+    # AGM path, where the agent physically holds the COD at the door.
+    if payload.get("actor") == "supplier_dropship":
+        return
     order_id = payload["order_id"]
     order = db.get(om.Order, order_id)
     if order is None:

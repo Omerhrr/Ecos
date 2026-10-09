@@ -19,6 +19,8 @@ const buyOpen = ref(false)
 const buyTarget = ref<MarketListing | null>(null)
 const buyQty = ref(1)
 const buyAgent = ref<number | null>(null)
+const buyMode = ref<'stock' | 'dropship'>('stock')
+const dropForm = reactive({ name: '', phone: '', address: '', city: 'Lagos' })
 const buyNote = ref('')
 const buying = ref(false)
 const lastOrder = ref<SourcingOrder | null>(null)
@@ -49,19 +51,33 @@ function openBuy(p: MarketListing) {
   buyTarget.value = p
   buyQty.value = p.moq
   buyAgent.value = links.value[0]?.agent_org_id ?? null
+  buyMode.value = 'stock'
+  dropForm.name = ''
+  dropForm.phone = ''
+  dropForm.address = ''
+  dropForm.city = 'Lagos'
   buyNote.value = ''
   buyOpen.value = true
 }
 
 async function submitBuy() {
   if (!buyTarget.value) return
+  if (buyMode.value === 'dropship' && !(dropForm.name && dropForm.phone && dropForm.address)) {
+    error.value = 'Dropship needs the recipient: name, phone and street address.'
+    return
+  }
   buying.value = true
   error.value = ''
   try {
     const so = await api.createSourcingOrder({
       supplier_product_id: buyTarget.value.id,
       qty: buyQty.value,
-      agent_org_id: buyAgent.value,
+      agent_org_id: buyMode.value === 'stock' ? buyAgent.value : null,
+      fulfillment_mode: buyMode.value,
+      dest_name: buyMode.value === 'dropship' ? dropForm.name : undefined,
+      dest_phone: buyMode.value === 'dropship' ? dropForm.phone : undefined,
+      dest_address: buyMode.value === 'dropship' ? dropForm.address : undefined,
+      dest_city: buyMode.value === 'dropship' ? dropForm.city : undefined,
       note: buyNote.value,
     })
     lastOrder.value = so
@@ -84,8 +100,13 @@ async function payLast() {
 }
 
 const fmt = (n: number) => '₦' + Number(n || 0).toLocaleString()
+// quote box renders only numeric rows — string keys (currency_original,
+// fx_source) are metadata, not money, and would print NaN otherwise
+const quoteRows = computed(() =>
+  Object.entries(buyTarget.value?.pricing ?? {}).filter(([, v]) => typeof v === 'number'),
+)
 const statusTone = (s: string) =>
-  ({ paid: 'blue', processing: 'amber', shipped: 'blue', in_transit: 'blue', customs: 'amber', destination_hub: 'blue', arrived: 'teal', received: 'green', cancelled: 'red' }[s] ?? 'gray')
+  ({ paid: 'blue', processing: 'amber', shipped: 'blue', in_transit: 'blue', customs: 'amber', destination_hub: 'blue', arrived: 'teal', received: 'green', out_for_delivery: 'blue', delivered: 'green', pending_payment: 'amber', cancelled: 'red' }[s] ?? 'gray')
 </script>
 
 <template>
@@ -115,7 +136,9 @@ const statusTone = (s: string) =>
           <span class="badge" :class="statusTone(lastOrder.status)" style="margin-left:.4rem">{{ lastOrder.status.replace('_',' ') }}</span>
           <div class="muted" style="margin-top:.2rem">
             {{ fmt(lastOrder.local_total) }} · cost ¥{{ lastOrder.cny_total?.toLocaleString() }} @ {{ lastOrder.fx_rate }} ·
-            {{ lastOrder.destination.via_agent ? 'ships to your agent' : 'ships to you' }}
+            {{ lastOrder.fulfillment_mode === 'dropship'
+              ? `dropship — direct to ${lastOrder.destination.name}, ${lastOrder.destination.city}`
+              : lastOrder.destination.via_agent ? 'ships to your agent' : 'ships to you' }}
           </div>
         </div>
         <div style="display:flex;gap:.5rem">
@@ -143,29 +166,61 @@ const statusTone = (s: string) =>
     <div v-if="buyOpen" class="modal-backdrop" @click.self="buyOpen = false">
       <div class="modal">
         <h2>Source: {{ buyTarget?.title }}</h2>
-        <p class="muted" style="margin-top:-.3rem">Prepaid stock purchase (§11). Units land at your agent's warehouse and become sellable on arrival.</p>
+        <p class="muted" style="margin-top:-.3rem">Prepaid purchase (§11). Pick how the parcel travels the corridor.</p>
+        <div class="field">
+          <label>Fulfillment</label>
+          <div class="row" style="gap:.5rem">
+            <button :class="buyMode === 'stock' ? '' : 'ghost'" style="flex:1" @click="buyMode = 'stock'">📦 Stock my warehouse / agent</button>
+            <button :class="buyMode === 'dropship' ? '' : 'ghost'" style="flex:1" @click="buyMode = 'dropship'">🚀 Dropship — direct to my customer</button>
+          </div>
+        </div>
         <div class="field">
           <label>Quantity (MOQ {{ buyTarget?.moq }})</label>
           <input v-model.number="buyQty" type="number" :min="buyTarget?.moq">
         </div>
-        <div class="field">
-          <label>Deliver to</label>
-          <select v-model="buyAgent">
-            <option :value="null">My own warehouse (direct)</option>
-            <option v-for="l in links" :key="l.agent_org_id" :value="l.agent_org_id">
-              Agent: {{ l.agent_name }} ({{ l.city }}) — {{ l.warehouses }} warehouse(s)
-            </option>
-          </select>
-          <small v-if="!links.length">No agent linked yet — add one under Agents · AGM, or ship direct to your warehouse.</small>
-        </div>
+        <template v-if="buyMode === 'stock'">
+          <div class="field">
+            <label>Deliver to</label>
+            <select v-model="buyAgent">
+              <option :value="null">My own warehouse (direct)</option>
+              <option v-for="l in links" :key="l.agent_org_id" :value="l.agent_org_id">
+                Agent: {{ l.agent_name }} ({{ l.city }}) — {{ l.warehouses }} warehouse(s)
+              </option>
+            </select>
+            <small v-if="!links.length">No agent linked yet — add one under Agents · AGM, or ship direct to your warehouse.</small>
+          </div>
+        </template>
+        <template v-else>
+          <div class="card" style="background:#f8fafc;padding:.7rem .8rem;margin-bottom:.6rem">
+            <div class="muted" style="font-size:.75rem;margin-bottom:.4rem">The supplier ships this parcel straight to your recipient — no AGM leg, nothing lands in stock (§9: the supplier never sees you or your storefront).</div>
+            <div class="row">
+              <div class="field" style="flex:1">
+                <label>Recipient name</label>
+                <input v-model="dropForm.name" placeholder="Customer's full name">
+              </div>
+              <div class="field" style="flex:1">
+                <label>Phone</label>
+                <input v-model="dropForm.phone" placeholder="e.g. +234 802 …">
+              </div>
+            </div>
+            <div class="field">
+              <label>Street address</label>
+              <input v-model="dropForm.address" placeholder="House, street, area">
+            </div>
+            <div class="field">
+              <label>City</label>
+              <input v-model="dropForm.city">
+            </div>
+          </div>
+        </template>
         <div class="field">
           <label>Note to the network (optional)</label>
           <textarea v-model="buyNote" rows="2" placeholder="e.g. Stock-up before campaign week"></textarea>
         </div>
         <div v-if="buyTarget" class="quote-box">
           <div class="muted" style="font-size:.75rem;text-transform:uppercase;letter-spacing:.05em">Estimated landed quote</div>
-          <div v-for="(v, k) in buyTarget.pricing" :key="k" style="display:flex;justify-content:space-between;font-size:.85rem;margin-top:.25rem">
-            <span class="muted">{{ k.replace(/_/g, ' ') }}</span><span>{{ k.includes('price') || k.includes('total') ? fmt(v as number) : k.includes('original') ? '¥' + Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 }) : '₦' + Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 }) }}</span>
+          <div v-for="[k, v] in quoteRows" :key="k" style="display:flex;justify-content:space-between;font-size:.85rem;margin-top:.25rem">
+            <span class="muted">{{ k.replace(/_/g, ' ') }}</span><span>{{ k.includes('original') ? '¥' + (v as number).toLocaleString(undefined, { maximumFractionDigits: 2 }) : k === 'lead_time_days' ? '~' + v + ' days' : '₦' + (v as number).toLocaleString(undefined, { maximumFractionDigits: 0 }) }}</span>
           </div>
           <div v-if="buyTarget.economics?.rate_card" style="margin-top:.45rem;font-size:.74rem" class="muted">
             Ships via <b>{{ buyTarget.economics.rate_card }}</b>
@@ -178,7 +233,7 @@ const statusTone = (s: string) =>
         </div>
         <div class="modal-actions">
           <button class="ghost" @click="buyOpen = false">Cancel</button>
-          <button :disabled="buying" @click="submitBuy">{{ buying ? 'Placing…' : 'Place sourcing order' }}</button>
+          <button :disabled="buying" @click="submitBuy">{{ buying ? 'Placing…' : buyMode === 'dropship' ? 'Place dropship order' : 'Place sourcing order' }}</button>
         </div>
       </div>
     </div>
