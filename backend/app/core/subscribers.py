@@ -109,5 +109,14 @@ def register_all() -> None:
     notification_subscribers.register()
     procurement_subscribers.register()
     warehouse_subscribers.register()
+
+    # Marketstore + sourcing (§8-11, §20, §23, §26) and the AGM (§24):
+    # alert pipelines, ledger waterfall for prepaid sourcing, COD custody.
+    from app.market import subscribers as market_subscribers
+    from app.agm import subscribers as agm_subscribers
+
+    market_subscribers.register()
+    agm_subscribers.register()
+
     # §41: the automation engine offers every catalog event to operator rules
     automation_service.register_dispatcher()

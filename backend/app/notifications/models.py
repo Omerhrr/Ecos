@@ -8,6 +8,7 @@ from app.core.database import Base
 NOTIFICATION_CATEGORIES = [
     "orders", "payments", "shipments", "returns",
     "settlements", "ai", "procurement", "leads", "system",
+    "market", "agm",
 ]
 NOTIFICATION_LEVELS = ["info", "success", "warning", "critical"]
 

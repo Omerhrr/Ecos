@@ -7,6 +7,8 @@ Permissions are `module:action` strings. Roles mirror the participant model:
 - manager      : runs catalog/orders/logistics/CRM/storefront/landing pages
 - agent        : front-line sales — CRM + order intake + reads
 - viewer       : read-only analyst access
+- supplier     : supply-side portal user (upload products, fulfil sourcing orders)
+- agm          : agent console user (local logistics: warehouses, stock, calls, COD)
 
 Tenant isolation note: permissions gate *what* a role may do; scoping gates
 *which rows* it may touch. Rows carrying org_id are filtered by the caller's
@@ -33,6 +35,7 @@ READ_PERMISSIONS = [
     "warehouse:read",
     "analytics:read",
     "automation:read",
+    "market:read",
 ]
 
 ALL_PERMISSIONS = READ_PERMISSIONS + [
@@ -54,13 +57,14 @@ ALL_PERMISSIONS = READ_PERMISSIONS + [
     "identity:manage",
     "automation:write",
     "finance:write",
+    "market:buy",
 ]
 
 _ROLE_OPS_WRITE = [
     "catalog:write", "orders:write", "logistics:write",
     "crm:write", "storefront:write", "landing_pages:write",
     "marketing:write", "returns:write", "warehouse:write",
-    "automation:write", "finance:write",
+    "automation:write", "finance:write", "market:buy",
 ]
 
 ROLE_PERMISSIONS: dict[str, list[str]] = {
@@ -76,6 +80,11 @@ ROLE_PERMISSIONS: dict[str, list[str]] = {
         "warehouse:read",
     ],
     "viewer": list(READ_PERMISSIONS),
+    # supplier portal users (§8/§9): their own listings + orders only —
+    # scoping (which rows) is enforced in the market router/service
+    "supplier": ["market:portal"],
+    # AGM console users: their own warehouses/stock/queue/remittances only
+    "agm": ["agm:operate", "agm:read"],
 }
 
 

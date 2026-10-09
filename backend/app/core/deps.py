@@ -75,3 +75,17 @@ def require_perm(perm: str) -> Callable[..., AuthContext]:
         return ctx
 
     return dep
+
+
+def require_role(role: str) -> Callable[..., AuthContext]:
+    """Role gate for participant-specific surfaces (supplier portal, AGM console).
+
+    Scoping (which rows) is still enforced per-query inside the routers —
+    this only checks WHO may hold the endpoint at all.
+    """
+    def dep(ctx: AuthContext = Depends(require_auth)) -> AuthContext:
+        if ctx.role != role:
+            raise HTTPException(status_code=403, detail=f"This surface requires the {role} role")
+        return ctx
+
+    return dep

@@ -6,10 +6,15 @@ const orders = ref<Order[]>([])
 const stores = ref<Store[]>([])
 const customers = ref<{ id: number; full_name: string; store_id: number }[]>([])
 const products = ref<Product[]>([])
+const agents = ref<AgentLinkRow[]>([])
 const loading = ref(true)
 const statusFilter = ref('')
 const showForm = ref(false)
 const busy = ref(false)
+const markFor = ref<Order | null>(null)
+const markAgent = ref<number | null>(null)
+const markBusy = ref(false)
+const markError = ref('')
 
 const form = reactive({
   store_id: 1, customer_id: 0, product_id: 0, qty: 1,
@@ -25,14 +30,16 @@ async function load() {
 }
 
 async function loadFormData() {
-  const [s, l, p] = await Promise.all([
+  const [s, l, p, ag] = await Promise.all([
     api.stores(),
     $fetch<{ id: number; store_id: number; full_name: string }[]>('/api/customers'),
     api.products({ status: 'active' }),
+    api.agentLinks().catch(() => []),
   ])
   stores.value = s
   customers.value = l
   products.value = p
+  agents.value = ag
   if (!form.customer_id && l.length) form.customer_id = l[0].id
   if (!form.product_id && p.length) form.product_id = p[0].id
 }
@@ -52,6 +59,28 @@ async function create() {
     navigateTo(`/orders/${res.id}`)
   }
   finally { busy.value = false }
+}
+
+// §20-24: hand a confirmed order to the agent — the AGM alert fires instantly
+async function openMark(o: Order) {
+  markFor.value = o
+  markAgent.value = agents.value[0]?.agent_org_id ?? null
+  markError.value = ''
+}
+
+async function confirmMark() {
+  if (!markFor.value || !markAgent.value) return
+  markBusy.value = true
+  markError.value = ''
+  try {
+    const ao = await api.markOrderForAgent(markFor.value.id, markAgent.value)
+    markFor.value = null
+    navigateTo('/agents')
+  }
+  catch (e: unknown) {
+    markError.value = (e as { response?: { _data?: { detail?: string } } })?.response?._data?.detail ?? 'Could not mark the order.'
+  }
+  finally { markBusy.value = false }
 }
 </script>
 
@@ -75,7 +104,7 @@ async function create() {
     <div v-else class="card" style="padding:0">
       <table>
         <thead>
-          <tr><th>#</th><th>Customer</th><th>Items</th><th>Total</th><th>Method</th><th>Payment</th><th>Status</th><th>Created</th></tr>
+          <tr><th>#</th><th>Customer</th><th>Items</th><th>Total</th><th>Method</th><th>Payment</th><th>Status</th><th>Created</th><th>AGM</th></tr>
         </thead>
         <tbody>
           <tr v-for="o in orders" :key="o.id">
@@ -87,10 +116,35 @@ async function create() {
             <td><StatusBadge :status="o.payment_status" /></td>
             <td><StatusBadge :status="o.status" /></td>
             <td class="muted" style="font-size:.76rem">{{ date(o.created_at) }}</td>
+            <td>
+              <button v-if="o.status === 'confirmed'" class="ghost small" @click="openMark(o)">Fulfill via agent</button>
+            </td>
           </tr>
-          <tr v-if="!orders.length"><td colspan="8" class="empty">No orders</td></tr>
+          <tr v-if="!orders.length"><td colspan="9" class="empty">No orders</td></tr>
         </tbody>
       </table>
+    </div>
+
+    <!-- §20-24: mark for agent fulfillment -->
+    <div v-if="markFor" class="modal-backdrop" @click.self="markFor = null">
+      <div class="modal">
+        <h2>Fulfill via agent</h2>
+        <p class="muted" style="margin-top:-.3rem">Order #{{ markFor.id }} — {{ markFor.customer_name }}. The agent gets the alert instantly, calls the customer and ships out (§20-24).</p>
+        <div v-if="!agents.length" class="badge amber" style="display:block;padding:.5rem">No agent linked yet — add one under Agents · AGM first.</div>
+        <div v-else class="field">
+          <label>Agent</label>
+          <select v-model.number="markAgent">
+            <option v-for="a in agents" :key="a.agent_org_id" :value="a.agent_org_id">
+              {{ a.agent_name }} ({{ a.city }}) — {{ a.warehouses }} warehouse(s)
+            </option>
+          </select>
+        </div>
+        <div v-if="markError" class="badge red" style="display:block;padding:.5rem">{{ markError }}</div>
+        <div class="row" style="justify-content:flex-end">
+          <button class="ghost" @click="markFor = null">Cancel</button>
+          <button :disabled="markBusy || !agents.length" @click="confirmMark">Mark for agent</button>
+        </div>
+      </div>
     </div>
 
     <div v-if="showForm" class="modal-backdrop" @click.self="showForm = false">

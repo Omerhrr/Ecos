@@ -7,13 +7,14 @@ from app.core.database import Base
 
 ENTRY_TYPES = [
     "customer_payment",    # money in from the customer (COD collection or gateway capture)
+    "sourcing_payment",    # §11: operator's prepaid marketstore purchase (money in)
     "supplier_payable",    # allocated out of gross: owed to the supplier
     "logistics_cost",      # allocated out of gross: owed to logistics partners
     "payment_cost",        # allocated out of gross: owed to the payment processor
     "luxeen_economics",    # allocated out of gross: Luxeen network economics (§57)
     "operator_economics",  # allocated out of gross: operator economics (§57)
     "refund",              # money out
-    "cod_variance",        # §24: courier remittance shortage/overage true-up
+    "cod_variance",        # §24: courier/agent remittance shortage/overage true-up
 ]
 
 PARTIES = ["customer", "supplier", "logistics", "payment_processor", "luxeen", "operator"]

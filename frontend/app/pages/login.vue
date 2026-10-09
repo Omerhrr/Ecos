@@ -10,7 +10,12 @@ const error = ref('')
 
 onMounted(() => {
   auth.restore()
-  if (auth.token.value) navigateTo('/dashboard')
+  if (auth.token.value) {
+    const role = auth.user.value?.role
+    if (role === 'supplier') navigateTo('/supplier')
+    else if (role === 'agm') navigateTo('/agm')
+    else navigateTo('/dashboard')
+  }
 })
 
 async function submit() {
@@ -19,7 +24,11 @@ async function submit() {
   try {
     const res = await api.login(email.value.trim(), password.value)
     auth.setSession(res)
-    navigateTo('/dashboard')
+    // §43: each participant lands in their own surface
+    const role = res.user?.role
+    if (role === 'supplier') navigateTo('/supplier')
+    else if (role === 'agm') navigateTo('/agm')
+    else navigateTo('/dashboard')
   }
   catch (e: unknown) {
     const status = (e as { response?: { status?: number } })?.response?.status
@@ -63,9 +72,11 @@ async function submit() {
           Demo accounts · password <code>demo1234</code>
         </div>
         <ul>
-          <li><code>owner@kara.example</code> — Kara owner (all permissions)</li>
+          <li><code>owner@kara.example</code> — Kara owner (operator, all permissions)</li>
           <li><code>bisi@kara.example</code> — Kara agent (CRM + orders only)</li>
-          <li><code>ops@luxeen.example</code> — Luxeen platform admin</li>
+          <li><code>ops@luxeen.example</code> — Luxeen platform admin (review gate)</li>
+          <li><code>supplier@shenzhen.example</code> — supplier portal (CN side)</li>
+          <li><code>agent@eko.example</code> — AGM console (local fulfillment)</li>
         </ul>
       </div>
 

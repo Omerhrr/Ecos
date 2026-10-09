@@ -36,6 +36,8 @@ from app.procurement import models as procurement_models  # noqa: F401,E402
 from app.warehouse import models as warehouse_models  # noqa: F401,E402
 from app.automation import models as automation_models  # noqa: F401,E402
 from app.cod import models as cod_models  # noqa: F401,E402
+from app.market import models as market_models  # noqa: F401,E402
+from app.agm import models as agm_models  # noqa: F401,E402
 
 from app.core.seed import seed_if_empty  # noqa: E402
 from app.core.deps import require_auth  # noqa: E402
@@ -62,6 +64,10 @@ from app.warehouse.router import router as warehouse_router  # noqa: E402
 from app.analytics.router import router as analytics_router  # noqa: E402
 from app.automation.router import router as automation_router  # noqa: E402
 from app.cod.router import router as cod_router  # noqa: E402
+from app.market.router import router as market_router  # noqa: E402
+from app.market.router import portal as market_portal_router  # noqa: E402
+from app.market.router import admin as market_admin_router  # noqa: E402
+from app.agm.router import router as agm_router  # noqa: E402
 from app.core.models import DomainEvent  # noqa: E402
 
 
@@ -96,10 +102,17 @@ async def lifespan(app: FastAPI):
     with SessionLocal() as db:
         seed_if_empty(db)
 
-        # §46: make sure the corridor rate table exists on every boot
+        # §46 first: the FX table must exist before anything prices the corridor
         from app.finance import fx as fx_service
 
         fx_service.seed_rates(db)
+        db.commit()
+
+        # Corridor depth (Marketstore + supplier portal + AGM): idempotent
+        # second-stage seed that also upgrades existing deployments.
+        from app.core import seed_market
+
+        seed_market.seed_market_if_missing(db)
         db.commit()
 
         # §31-38: orgs that already adopted the harness gain newly built
@@ -184,7 +197,8 @@ for r in [
     payments_router, finance_router, landing_pages_router, marketing_router,
     returns_router, settlements_router, ai_router, notifications_router,
     procurement_router, warehouse_router, analytics_router, automation_router,
-    cod_router,
+    cod_router, market_router, market_portal_router, market_admin_router,
+    agm_router,
 ]:
     app.include_router(r, prefix="/api")
 

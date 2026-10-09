@@ -32,9 +32,12 @@ onMounted(async () => {
       </div>
       <nav class="nav">
         <NuxtLink to="/dashboard">Command Center</NuxtLink>
+        <NuxtLink to="/market">Marketstore</NuxtLink>
+        <NuxtLink to="/sourcing">Sourcing · Corridor</NuxtLink>
         <NuxtLink to="/catalog">Catalog</NuxtLink>
         <NuxtLink to="/crm">CRM · Leads</NuxtLink>
         <NuxtLink to="/orders">Orders</NuxtLink>
+        <NuxtLink to="/agents">Agents · AGM</NuxtLink>
         <NuxtLink to="/logistics">Logistics</NuxtLink>
         <NuxtLink to="/returns">Returns · RMA</NuxtLink>
         <NuxtLink to="/procurement">Procurement · POs</NuxtLink>
@@ -50,6 +53,7 @@ onMounted(async () => {
           <span>Notifications</span>
           <span v-if="mounted && unread" class="unread-badge">{{ unread > 99 ? '99+' : unread }}</span>
         </NuxtLink>
+        <NuxtLink v-if="mounted && auth.user.value?.role === 'luxeen_admin'" to="/suppliers">Supplier Network</NuxtLink>
         <NuxtLink to="/events">Event Stream</NuxtLink>
       </nav>
       <div class="sidebar-foot">

@@ -23,12 +23,13 @@ _STATIC = {
 }
 
 
-def get_rate(db: Session, base: str, quote: str) -> tuple[float, str]:
+def get_rate(db: Session, base: str, quote: str, _seen: set[tuple[str, str]] | None = None) -> tuple[float, str]:
     """Return (rate, source). base == quote -> (1.0, 'identity').
 
     Resolution order: direct row -> inverse row -> triangulation through a
-    third currency -> static fallback. Recursion-safe (pivots that equal
-    base or quote are skipped).
+    third currency -> static fallback. The visited-set guards the pivot
+    recursion (an empty table must degrade to the static fallback, never
+    recurse forever).
     """
     base, quote = base.upper(), quote.upper()
     if base == quote:
@@ -50,14 +51,18 @@ def get_rate(db: Session, base: str, quote: str) -> tuple[float, str]:
     if inverse and inverse.rate:
         return round(1.0 / float(inverse.rate), 10), f"inverse:{inverse.source or 'manual'}"
 
+    seen = _seen if _seen is not None else set()
+    if (base, quote) in seen:
+        return None, "cycle"  # unreachable through this path — stop recursing
+    seen = seen | {(base, quote)}
+
     for pivot in ("USD", "NGN", "CNY"):
         if pivot in (base, quote):
             continue
-        try:
-            r1, s1 = get_rate(db, base, pivot)
-            r2, s2 = get_rate(db, pivot, quote)
-        except ValueError:
+        r1, s1 = get_rate(db, base, pivot, seen)
+        if not r1:
             continue
+        r2, s2 = get_rate(db, pivot, quote, seen)
         if r1 and r2:
             return r1 * r2, f"triangulated:{s1}+{s2}"
 

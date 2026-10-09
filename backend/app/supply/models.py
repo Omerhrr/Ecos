@@ -23,4 +23,6 @@ class Supplier(Base):
     rating: Mapped[float] = mapped_column(Float, default=0.0)  # 0..5 network performance rating
     lead_time_days: Mapped[int] = mapped_column(Integer, default=14)
     notes: Mapped[str] = mapped_column(String(1024), default="")
+    # portal tenancy (§43): when set, users of this org run the supplier portal
+    org_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -960,6 +960,192 @@ export interface LoginResponse {
 
 const PUBLIC_PATHS = ['/', '/login', '/lp', '/products', '/cart', '/track', '/pricing']
 
+// ---- §8-11 Marketstore / sourcing / AGM types ----
+
+export interface MarketListing {
+  id: number
+  catalog_product_id: number | null
+  title: string
+  description: string
+  category: string
+  industry: string
+  images: string[]
+  specs: Record<string, unknown>
+  moq: number
+  weight_kg: number
+  currency: string
+  unit_price: number
+  pricing: Record<string, number>
+  available_from: string
+  lead_time_days: number
+}
+
+export interface SourcingEvent {
+  id: number
+  code: string
+  description: string
+  location: string
+  occurred_at: string | null
+}
+
+export interface SourcingOrder {
+  id: number
+  order_number: string
+  title: string
+  qty: number
+  cny_total: number
+  fx_rate: number
+  local_currency: string
+  local_total: number
+  status: string
+  payment_method: string
+  payment_reference: string
+  paid_at: string | null
+  destination: { name: string; phone: string; address: string; city: string; country: string; via_agent: boolean }
+  supplier_note: string
+  received_at: string | null
+  catalog_product_id: number | null
+  created_at: string | null
+  events?: SourcingEvent[]
+  receive_result?: Record<string, unknown>
+}
+
+export interface SupplierProduct {
+  id: number
+  title: string
+  description: string
+  category: string
+  industry: string
+  cost_price: number
+  currency: string
+  weight_kg: number
+  moq: number
+  images: string[]
+  specs: Record<string, unknown>
+  status: string
+  review_notes: string
+  catalog_product_id: number | null
+  allowed_transitions?: string[]
+}
+
+export interface SourcingSupplierView {
+  id: number
+  order_number: string
+  title: string
+  qty: number
+  unit_cost_cny: number
+  cny_total: number
+  status: string
+  destination: { name: string; phone: string; address: string; city: string; country: string }
+  note: string
+  events?: SourcingEvent[]
+}
+
+export interface AgentCard {
+  agent_org_id: number
+  company: string
+  contact_name: string
+  phone: string
+  whatsapp: string
+  city: string
+  country: string
+  address: string
+  capacity_note: string
+  rating: number
+  warehouses: number
+  status: string
+  linked: boolean
+  link_status: string | null
+}
+
+export interface AgentLinkRow {
+  id: number
+  agent_org_id: number
+  agent_name?: string
+  vendor_org_id?: number
+  vendor_name?: string
+  city?: string
+  phone?: string
+  warehouses?: number
+  status: string
+  created_at: string | null
+}
+
+export interface AgentOrder {
+  id: number
+  code: string
+  agent_org_id: number
+  vendor_org_id: number
+  order_id: number
+  product_id: number
+  title: string
+  qty: number
+  customer: { name: string; phone: string; address: string; city: string }
+  payment_method: string
+  cod_expected: number
+  cod_collected: number
+  collected_at: string | null
+  remittance_id: number | null
+  status: string
+  note: string
+  failed_reason: string
+  created_at: string | null
+  allowed_transitions: string[]
+}
+
+export interface AgmOverview {
+  company: string
+  vendors: number
+  warehouses: number
+  queue: Record<string, number>
+  pending_alerts: number
+  cod_awaiting_remit: number
+  units_held: number
+}
+
+export interface AgentWarehouseRow {
+  id: number
+  code: string
+  name: string
+  city: string
+  country: string
+  address: string
+  is_default: boolean
+  status: string
+}
+
+export interface AgentStockRow {
+  id: number
+  warehouse_id: number
+  vendor_org_id: number
+  vendor_name: string
+  product_id: number
+  product_title: string
+  product_image: string | null
+  on_hand: number
+  reserved: number
+  sellable: number
+}
+
+export interface AgentRemittance {
+  id: number
+  register_code: string
+  agent_org_id: number
+  vendor_org_id: number | null
+  status: string
+  currency: string
+  expected_amount: number
+  remitted_amount: number
+  counted_amount: number
+  variance_amount: number
+  reference: string
+  note: string
+  remitted_at: string | null
+  reconciled_at: string | null
+  created_at: string | null
+  lines?: { id: number; agent_order_id: number; order_id: number; vendor_org_id: number; expected_amount: number; counted_amount: number }[]
+}
+
 function isPublicPath(path: string) {
   if (path === '/' || path === '/login' || path === '/cart') return true
   return PUBLIC_PATHS.some(p => p !== '/' && path.startsWith(p))
@@ -1296,5 +1482,73 @@ export function useApi() {
     }) => req<CheckoutResult>('/api/public/checkout', { method: 'POST', body }),
     publicOrderStatus: (orderId: number, phone: string) =>
       req<PublicOrderStatus>(`/api/public/orders/${orderId}`, { params: { phone } }),
+
+    // ---- §8-11 Marketstore + sourcing (corridor) ----
+    marketProducts: (params?: { category?: string; industry?: string; q?: string }) =>
+      req<MarketListing[]>('/api/market/products', { params }),
+    marketProduct: (id: number) => req<MarketListing>(`/api/market/products/${id}`),
+    sourcingOrders: () => req<SourcingOrder[]>('/api/market/sourcing-orders'),
+    createSourcingOrder: (body: { supplier_product_id: number; qty: number; agent_org_id?: number | null; note?: string; dest_name?: string; dest_phone?: string; dest_address?: string; dest_city?: string }) =>
+      req<SourcingOrder>('/api/market/sourcing-orders', { method: 'POST', body }),
+    paySourcingOrder: (id: number, method = 'online_transfer') =>
+      req<SourcingOrder>(`/api/market/sourcing-orders/${id}/pay`, { method: 'POST', body: { method } }),
+    cancelSourcingOrder: (id: number) =>
+      req<SourcingOrder>(`/api/market/sourcing-orders/${id}/cancel`, { method: 'POST', body: {} }),
+    receiveSourcingOrder: (id: number, warehouseId?: number) =>
+      req<SourcingOrder>(`/api/market/sourcing-orders/${id}/receive`, { method: 'POST', body: { warehouse_id: warehouseId ?? null } }),
+
+    // ---- §8 supplier portal (role=supplier) ----
+    portalProducts: () => req<SupplierProduct[]>('/api/market/portal/products'),
+    portalUploadProduct: (body: Record<string, unknown>) =>
+      req<SupplierProduct>('/api/market/portal/products', { method: 'POST', body }),
+    portalPatchProduct: (id: number, body: Record<string, unknown>) =>
+      req<SupplierProduct>(`/api/market/portal/products/${id}`, { method: 'PATCH', body }),
+    portalSubmitProduct: (id: number) =>
+      req<SupplierProduct>(`/api/market/portal/products/${id}/submit`, { method: 'POST', body: {} }),
+    portalOrders: () => req<SourcingSupplierView[]>('/api/market/portal/orders'),
+    portalAcceptOrder: (id: number) =>
+      req<SourcingSupplierView>(`/api/market/portal/orders/${id}/accept`, { method: 'POST', body: {} }),
+    portalAddTracking: (id: number, body: { code: string; location?: string; description?: string }) =>
+      req<SourcingSupplierView>(`/api/market/portal/orders/${id}/tracking`, { method: 'POST', body }),
+
+    // ---- §8 review gate + provisioning (platform) ----
+    adminMarketProducts: (status?: string) =>
+      req<SupplierProduct[]>('/api/market/admin/products', { params: status ? { status } : {} }),
+    reviewMarketProduct: (id: number, decision: 'approve' | 'reject', notes = '') =>
+      req<SupplierProduct>(`/api/market/admin/products/${id}/review`, { method: 'POST', body: { decision, notes } }),
+    publishMarketProduct: (id: number) =>
+      req<SupplierProduct>(`/api/market/admin/products/${id}/publish`, { method: 'POST', body: {} }),
+    createSupplierOrg: (body: { company: string; contact_name: string; email: string; password: string; city?: string; country?: string }) =>
+      req<{ org: { id: number; name: string }; supplier_id: number }>('/api/market/admin/supplier-orgs', { method: 'POST', body }),
+
+    // ---- AGM: agents (§20-24) ----
+    agentDirectory: () => req<AgentCard[]>('/api/agm/directory'),
+    agentLinks: () => req<AgentLinkRow[]>('/api/agm/links'),
+    addAgentLink: (agentOrgId: number) =>
+      req<{ ok: boolean }>(`/api/agm/links`, { method: 'POST', body: { agent_org_id: agentOrgId } }),
+    markOrderForAgent: (orderId: number, agentOrgId: number) =>
+      req<AgentOrder>(`/api/agm/orders/${orderId}/mark`, { method: 'POST', body: { agent_org_id: agentOrgId } }),
+    vendorAgentOrders: () => req<AgentOrder[]>('/api/agm/vendor-orders'),
+
+    // ---- AGM console (role=agm) ----
+    agmOverview: () => req<AgmOverview>('/api/agm/overview'),
+    agmWarehouses: () => req<AgentWarehouseRow[]>('/api/agm/warehouses'),
+    agmCreateWarehouse: (body: { name: string; city?: string; country?: string; address?: string; is_default?: boolean }) =>
+      req<{ id: number; code: string; name: string }>('/api/agm/warehouses', { method: 'POST', body }),
+    agmStock: (warehouseId?: number) =>
+      req<AgentStockRow[]>('/api/agm/stock', { params: warehouseId ? { warehouse_id: warehouseId } : {} }),
+    agmReceiveSourcing: (soId: number, warehouseId?: number) =>
+      req<{ ok: boolean; warehouse: string; qty: number }>(`/api/agm/receive-sourcing/${soId}`, { method: 'POST', body: { warehouse_id: warehouseId ?? null } }),
+    agmOrders: (status?: string) =>
+      req<AgentOrder[]>('/api/agm/orders', { params: status ? { status } : {} }),
+    agmOrderAction: (id: number, body: { action: string; cod_collected?: number | null; note?: string; failed_reason?: string }) =>
+      req<AgentOrder>(`/api/agm/orders/${id}/action`, { method: 'POST', body }),
+    agmRemittances: () => req<AgentRemittance[]>('/api/agm/remittances'),
+    agmCreateRemittance: (body?: { vendor_org_id?: number | null; agent_order_ids?: number[]; reference?: string }) =>
+      req<AgentRemittance>('/api/agm/remittances', { method: 'POST', body: body ?? {} }),
+    agmRemit: (id: number, reference = '') =>
+      req<AgentRemittance>(`/api/agm/remittances/${id}/remit`, { method: 'POST', body: { reference } }),
+    agmReconcile: (id: number, counted: Record<string, number>) =>
+      req<AgentRemittance>(`/api/agm/remittances/${id}/reconcile`, { method: 'POST', body: { counted } }),
   }
 }
